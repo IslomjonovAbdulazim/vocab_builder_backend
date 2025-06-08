@@ -13,9 +13,12 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_days: int = 100
 
-    # Email
-    resend_api_key: str
-    from_email: str = "onboarding@resend.dev"
+    # SMTP Email
+    smtp_host: str
+    smtp_port: int = 587
+    smtp_username: str
+    smtp_password: str
+    from_email: str
     from_name: str = "VocabBuilder"
     otp_expire_minutes: int = 5
 

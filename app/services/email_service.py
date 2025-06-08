@@ -1,13 +1,12 @@
-import resend
-import requests
+import smtplib
+import time
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from app.config import settings
-
-# Set API key
-resend.api_key = settings.resend_api_key
 
 
 def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send beautiful OTP email using Resend API"""
+    """Send beautiful OTP email via Gmail SMTP (2024 Optimized)"""
 
     # Email content based on purpose
     if purpose == "reset":
@@ -75,43 +74,61 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
     </html>
     """
 
-    try:
-        # Method 1: Try new Resend syntax
+    # Retry logic for better reliability
+    max_retries = 3
+    retry_delay = 2
+
+    for attempt in range(max_retries):
         try:
-            response = resend.Emails.send({
-                "from": f"{settings.from_name} <{settings.from_email}>",
-                "to": [email],
-                "subject": subject,
-                "html": html_content,
-            })
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = f"{settings.from_name} <{settings.from_email}>"
+            msg['To'] = email
+
+            # Add HTML content
+            html_part = MIMEText(html_content, 'html', 'utf-8')
+            msg.attach(html_part)
+
+            # 2024 Best Practice: Use SMTP_SSL with port 465 (more reliable than TLS)
+            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
+                # Enhanced authentication
+                server.ehlo()  # Identify ourselves to smtp server
+                server.login(settings.smtp_username, settings.smtp_password)
+
+                # Send email
+                server.send_message(msg)
+
+            print(f"✅ Email sent successfully to {email} (attempt {attempt + 1})")
             return True
-        except:
-            # Method 2: Try direct API call
-            headers = {
-                "Authorization": f"Bearer {settings.resend_api_key}",
-                "Content-Type": "application/json"
-            }
 
-            data = {
-                "from": f"{settings.from_name} <{settings.from_email}>",
-                "to": [email],
-                "subject": subject,
-                "html": html_content,
-            }
-
-            response = requests.post(
-                "https://api.resend.com/emails",
-                headers=headers,
-                json=data
-            )
-
-            if response.status_code == 200:
-                print(f"✅ Email sent successfully to {email}")
-                return True
-            else:
-                print(f"❌ Email failed: {response.status_code} - {response.text}")
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"❌ Gmail Authentication Error (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:
+                print("💡 Troubleshooting tips:")
+                print("   1. Check if 2FA is enabled: https://myaccount.google.com/security")
+                print("   2. Generate new App Password: https://myaccount.google.com/apppasswords")
+                print("   3. Use the 16-character app password (no spaces)")
+                print("   4. Check for security notifications in Gmail")
                 return False
+            time.sleep(retry_delay)
 
-    except Exception as e:
-        print(f"❌ Email failed: {e}")
-        return False
+        except smtplib.SMTPServerDisconnected as e:
+            print(f"❌ Gmail Server Disconnected (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return False
+
+        except smtplib.SMTPRecipientsRefused as e:
+            print(f"❌ Recipient Refused (attempt {attempt + 1}): {e}")
+            return False  # Don't retry for invalid recipients
+
+        except Exception as e:
+            print(f"❌ Email failed (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return False
+
+    return False
