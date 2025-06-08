@@ -1,12 +1,22 @@
 import smtplib
 import time
+import socket
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from app.config import settings
 
 
+def test_smtp_connection(host: str, port: int) -> bool:
+    """Test if SMTP port is reachable"""
+    try:
+        with socket.create_connection((host, port), timeout=5):
+            return True
+    except (socket.error, socket.timeout):
+        return False
+
+
 def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send beautiful OTP email via Gmail SMTP (2024 Optimized)"""
+    """Send beautiful OTP email via Gmail SMTP with port fallback"""
 
     # Email content based on purpose
     if purpose == "reset":
@@ -74,12 +84,26 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
     </html>
     """
 
-    # Retry logic for better reliability
-    max_retries = 3
-    retry_delay = 2
+    # Try multiple SMTP configurations (ports that might not be blocked)
+    smtp_configs = [
+        # Gmail alternative ports (some ISPs don't block these)
+        {"host": "smtp.gmail.com", "port": 2525, "ssl": False},  # Alternative port
+        {"host": "smtp.gmail.com", "port": 587, "ssl": False},  # Standard TLS
+        {"host": "smtp.gmail.com", "port": 465, "ssl": True},  # SSL
+        {"host": "smtp.gmail.com", "port": 25, "ssl": False},  # Legacy port
+    ]
 
-    for attempt in range(max_retries):
+    for config in smtp_configs:
         try:
+            print(f"🔍 Testing {config['host']}:{config['port']} ({'SSL' if config['ssl'] else 'TLS'})")
+
+            # Test connectivity first
+            if not test_smtp_connection(config['host'], config['port']):
+                print(f"❌ Port {config['port']} is blocked")
+                continue
+
+            print(f"✅ Port {config['port']} is reachable, attempting to send...")
+
             # Create message
             msg = MIMEMultipart('alternative')
             msg['Subject'] = subject
@@ -90,45 +114,41 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
             html_part = MIMEText(html_content, 'html', 'utf-8')
             msg.attach(html_part)
 
-            # 2024 Best Practice: Use SMTP_SSL with port 465 (more reliable than TLS)
-            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
-                # Enhanced authentication
-                server.ehlo()  # Identify ourselves to smtp server
-                server.login(settings.smtp_username, settings.smtp_password)
+            # Try to send
+            if config['ssl']:
+                # Use SSL connection
+                with smtplib.SMTP_SSL(config['host'], config['port'], timeout=15) as server:
+                    server.ehlo()
+                    server.login(settings.smtp_username, settings.smtp_password)
+                    server.send_message(msg)
+            else:
+                # Use TLS connection
+                with smtplib.SMTP(config['host'], config['port'], timeout=15) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(settings.smtp_username, settings.smtp_password)
+                    server.send_message(msg)
 
-                # Send email
-                server.send_message(msg)
-
-            print(f"✅ Email sent successfully to {email} (attempt {attempt + 1})")
+            print(f"✅ Email sent successfully via {config['host']}:{config['port']}")
             return True
 
+        except socket.error as e:
+            print(f"❌ Network error on port {config['port']}: {e}")
+            continue
         except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ Gmail Authentication Error (attempt {attempt + 1}): {e}")
-            if attempt == max_retries - 1:
-                print("💡 Troubleshooting tips:")
-                print("   1. Check if 2FA is enabled: https://myaccount.google.com/security")
-                print("   2. Generate new App Password: https://myaccount.google.com/apppasswords")
-                print("   3. Use the 16-character app password (no spaces)")
-                print("   4. Check for security notifications in Gmail")
-                return False
-            time.sleep(retry_delay)
-
-        except smtplib.SMTPServerDisconnected as e:
-            print(f"❌ Gmail Server Disconnected (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            return False
-
-        except smtplib.SMTPRecipientsRefused as e:
-            print(f"❌ Recipient Refused (attempt {attempt + 1}): {e}")
-            return False  # Don't retry for invalid recipients
-
+            print(f"❌ Auth error on port {config['port']}: {e}")
+            continue
         except Exception as e:
-            print(f"❌ Email failed (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            return False
+            print(f"❌ Failed on port {config['port']}: {e}")
+            continue
+
+    # If all Gmail ports fail, provide helpful error message
+    print("❌ All Gmail SMTP ports are blocked by your network/ISP")
+    print("💡 Solutions:")
+    print("   1. Contact your ISP/hosting provider about SMTP restrictions")
+    print("   2. Use SMTP2GO, MailerSend, or another email service")
+    print("   3. Try using a VPN to bypass restrictions")
+    print("   4. Use HTTP-based email APIs instead of SMTP")
 
     return False
