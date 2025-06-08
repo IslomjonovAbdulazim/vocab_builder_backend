@@ -1,24 +1,11 @@
-import smtplib
-import time
-import socket
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import requests
+import json
 from app.config import settings
 
 
-def test_smtp_connection(host: str, port: int) -> bool:
-    """Test if SMTP port is reachable"""
-    try:
-        with socket.create_connection((host, port), timeout=5):
-            return True
-    except (socket.error, socket.timeout):
-        return False
-
-
 def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send beautiful OTP email via Gmail SMTP with port fallback"""
+    """Send OTP email using MailerSend HTTP API (no SMTP blocking issues)"""
 
-    # Email content based on purpose
     if purpose == "reset":
         subject = "Reset Your VocabBuilder Password"
         title = "Password Reset"
@@ -84,71 +71,39 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
     </html>
     """
 
-    # Try multiple SMTP configurations (ports that might not be blocked)
-    smtp_configs = [
-        # Gmail alternative ports (some ISPs don't block these)
-        {"host": "smtp.gmail.com", "port": 2525, "ssl": False},  # Alternative port
-        {"host": "smtp.gmail.com", "port": 587, "ssl": False},  # Standard TLS
-        {"host": "smtp.gmail.com", "port": 465, "ssl": True},  # SSL
-        {"host": "smtp.gmail.com", "port": 25, "ssl": False},  # Legacy port
-    ]
+    print(f"🔍 Sending OTP email to {email} via MailerSend HTTP API...")
 
-    for config in smtp_configs:
-        try:
-            print(f"🔍 Testing {config['host']}:{config['port']} ({'SSL' if config['ssl'] else 'TLS'})")
+    try:
+        # MailerSend HTTP API call (no SMTP blocking!)
+        response = requests.post(
+            "https://api.mailersend.com/v1/email",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {settings.mailersend_token}"
+            },
+            json={
+                "from": {
+                    "email": settings.from_email,
+                    "name": settings.from_name
+                },
+                "to": [{"email": email}],
+                "subject": subject,
+                "html": html_content
+            },
+            timeout=10
+        )
 
-            # Test connectivity first
-            if not test_smtp_connection(config['host'], config['port']):
-                print(f"❌ Port {config['port']} is blocked")
-                continue
-
-            print(f"✅ Port {config['port']} is reachable, attempting to send...")
-
-            # Create message
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = subject
-            msg['From'] = f"{settings.from_name} <{settings.from_email}>"
-            msg['To'] = email
-
-            # Add HTML content
-            html_part = MIMEText(html_content, 'html', 'utf-8')
-            msg.attach(html_part)
-
-            # Try to send
-            if config['ssl']:
-                # Use SSL connection
-                with smtplib.SMTP_SSL(config['host'], config['port'], timeout=15) as server:
-                    server.ehlo()
-                    server.login(settings.smtp_username, settings.smtp_password)
-                    server.send_message(msg)
-            else:
-                # Use TLS connection
-                with smtplib.SMTP(config['host'], config['port'], timeout=15) as server:
-                    server.ehlo()
-                    server.starttls()
-                    server.ehlo()
-                    server.login(settings.smtp_username, settings.smtp_password)
-                    server.send_message(msg)
-
-            print(f"✅ Email sent successfully via {config['host']}:{config['port']}")
+        if response.status_code in [200, 201, 202]:
+            print(f"✅ Email sent successfully via MailerSend!")
+            print(f"   📧 From: {settings.from_email}")
+            print(f"   📧 To: {email}")
+            print(f"   🔢 OTP: {otp_code}")
             return True
+        else:
+            print(f"❌ MailerSend failed: {response.status_code}")
+            print(f"   Response: {response.text}")
+            return False
 
-        except socket.error as e:
-            print(f"❌ Network error on port {config['port']}: {e}")
-            continue
-        except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ Auth error on port {config['port']}: {e}")
-            continue
-        except Exception as e:
-            print(f"❌ Failed on port {config['port']}: {e}")
-            continue
-
-    # If all Gmail ports fail, provide helpful error message
-    print("❌ All Gmail SMTP ports are blocked by your network/ISP")
-    print("💡 Solutions:")
-    print("   1. Contact your ISP/hosting provider about SMTP restrictions")
-    print("   2. Use SMTP2GO, MailerSend, or another email service")
-    print("   3. Try using a VPN to bypass restrictions")
-    print("   4. Use HTTP-based email APIs instead of SMTP")
-
-    return False
+    except Exception as e:
+        print(f"❌ MailerSend error: {e}")
+        return False
