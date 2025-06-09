@@ -6,7 +6,10 @@ from app.config import settings
 
 
 def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send OTP email via Timeweb SMTP TLS (port 587)"""
+    """
+    Send OTP email via Timeweb SMTP with automatic port fallback
+    Tries ports in order: 2525 → 25 → 587
+    """
 
     if purpose == "reset":
         subject = "Reset Your VocabBuilder Password"
@@ -73,13 +76,34 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
     </html>
     """
 
-    print(f"🔍 Sending OTP email to {email} via Timeweb SMTP TLS (port 587)...")
+    print(f"🔍 Sending OTP email to {email} via Timeweb SMTP (trying multiple ports)...")
 
-    # Retry logic for better reliability
-    max_retries = 3
-    retry_delay = 2
+    # Port configurations in order of preference
+    smtp_configs = [
+        {
+            "port": 2525,
+            "use_tls": False,
+            "description": "Port 2525 (unencrypted, ISP-friendly)"
+        },
+        {
+            "port": 25,
+            "use_tls": False,
+            "description": "Port 25 (standard SMTP)"
+        },
+        {
+            "port": 587,
+            "use_tls": True,
+            "description": "Port 587 (STARTTLS)"
+        }
+    ]
 
-    for attempt in range(max_retries):
+    for config in smtp_configs:
+        port = config["port"]
+        use_tls = config["use_tls"]
+        description = config["description"]
+
+        print(f"\n🔄 Trying {description}...")
+
         try:
             # Create message
             msg = MIMEMultipart('alternative')
@@ -91,13 +115,14 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
             html_part = MIMEText(html_content, 'html', 'utf-8')
             msg.attach(html_part)
 
-            # Timeweb SMTP TLS connection (port 587)
-            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
-                print(f"🔗 Connected to {settings.smtp_host}:{settings.smtp_port}")
+            # Connect with short timeout to fail fast
+            with smtplib.SMTP(settings.smtp_host, port, timeout=10) as server:
+                print(f"🔗 Connected to {settings.smtp_host}:{port}")
 
-                # Start TLS encryption
-                server.starttls()
-                print("🔒 Started TLS encryption")
+                # Use TLS if specified
+                if use_tls:
+                    server.starttls()
+                    print("🔒 Started TLS encryption")
 
                 # Authenticate
                 server.login(settings.smtp_username, settings.smtp_password)
@@ -106,48 +131,32 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
                 # Send email
                 server.send_message(msg)
 
-            print(f"✅ Email sent successfully via Timeweb SMTP TLS!")
+            print(f"✅ Email sent successfully via Timeweb SMTP!")
+            print(f"   📧 Port: {port} ({description})")
             print(f"   📧 From: {settings.from_email}")
             print(f"   📧 To: {email}")
             print(f"   🔢 OTP: {otp_code}")
-            print(f"   🔄 Attempt: {attempt + 1}")
+            print(f"   🔒 Encryption: {'TLS' if use_tls else 'None'}")
             return True
 
         except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ Timeweb Authentication Error (attempt {attempt + 1}): {e}")
-            if attempt == max_retries - 1:
-                print("💡 Troubleshooting Timeweb SMTP:")
-                print("   1. Check your email account credentials")
-                print("   2. Verify your email password is correct")
-                print("   3. Ensure email service is active in Timeweb panel")
-                print(f"   4. Current username: {settings.smtp_username}")
-                print(f"   5. Current password: {settings.smtp_password[:4]}...")
-                return False
-            time.sleep(retry_delay)
+            print(f"❌ Authentication Error on port {port}: {e}")
+            print("💡 Check your Timeweb email credentials!")
+            return False  # Don't try other ports if auth fails
 
-        except smtplib.SMTPServerDisconnected as e:
-            print(f"❌ Timeweb Server Disconnected (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            return False
-
-        except smtplib.SMTPRecipientsRefused as e:
-            print(f"❌ Recipient Refused (attempt {attempt + 1}): {e}")
-            return False  # Don't retry for invalid recipients
-
-        except ConnectionError as e:
-            print(f"❌ Connection Error (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            return False
+        except (smtplib.SMTPServerDisconnected, ConnectionError, OSError) as e:
+            print(f"❌ Connection failed on port {port}: {e}")
+            continue  # Try next port
 
         except Exception as e:
-            print(f"❌ Timeweb SMTP failed (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            return False
+            print(f"❌ Unexpected error on port {port}: {e}")
+            continue  # Try next port
+
+    print("❌ All SMTP port configurations failed!")
+    print("💡 Troubleshooting steps:")
+    print("   1. Check if Timeweb email service is active")
+    print("   2. Verify email credentials in Timeweb panel")
+    print("   3. Contact Timeweb support for SMTP settings")
+    print("   4. Check if your ISP blocks SMTP ports")
 
     return False
