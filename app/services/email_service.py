@@ -164,7 +164,6 @@ class EmailService:
         </html>
         """
 
-
 # Global instance
 email_service = EmailService()
 
