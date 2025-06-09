@@ -5,8 +5,9 @@ from sqlalchemy.orm import Session
 from app.models.user import User
 from app.models.otp import OTP
 from app.core.security import hash_password, verify_password, create_access_token
-from app.services.email_service import send_otp_email
+from app.services.email_service import email_service
 from app.config import settings
+import asyncio
 
 
 def generate_otp() -> str:
@@ -15,7 +16,7 @@ def generate_otp() -> str:
 
 
 def create_otp(db: Session, email: str, purpose: str = "verification") -> str:
-    """Create and store OTP"""
+    """Create and store OTP, send email"""
     # Delete old OTPs for this email
     db.query(OTP).filter(OTP.email == email).delete()
     db.commit()
@@ -29,8 +30,8 @@ def create_otp(db: Session, email: str, purpose: str = "verification") -> str:
     db.add(otp)
     db.commit()
 
-    # Send email
-    send_otp_email(email, otp_code, purpose)
+    # Send email asynchronously
+    asyncio.create_task(email_service.send_otp_email(email, otp_code, purpose))
 
     return otp_code
 
