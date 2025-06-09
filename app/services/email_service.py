@@ -21,6 +21,8 @@ class EmailService:
 
     async def send_otp_email(self, email: str, otp_code: str, purpose: str = "verification") -> bool:
         """Send OTP email - returns True if successful, False otherwise"""
+        logger.info(f"📧 Starting email send process to {email} (purpose: {purpose}, OTP: {otp_code})")
+
         try:
             # Create message
             msg = MIMEMultipart('alternative')
@@ -29,12 +31,15 @@ class EmailService:
             if purpose == "reset":
                 msg['Subject'] = "Reset Your VocabBuilder Password"
                 message_text = f"Your password reset code: {otp_code}\n\nThis code expires in 5 minutes."
+                logger.info(f"📝 Created password reset message for {email}")
             else:
                 msg['Subject'] = "Verify Your VocabBuilder Account"
                 message_text = f"Your verification code: {otp_code}\n\nThis code expires in 5 minutes."
+                logger.info(f"📝 Created verification message for {email}")
 
             msg['From'] = f"{self.from_name} <{self.from_email}>"
             msg['To'] = email
+            logger.info(f"📮 Email headers set - From: {self.from_email}, To: {email}")
 
             # Create plain text version
             text_part = MIMEText(message_text, 'plain', 'utf-8')
@@ -46,25 +51,53 @@ class EmailService:
             # Attach both versions
             msg.attach(text_part)
             msg.attach(html_part)
+            logger.info(f"📎 Email content attached (text + HTML)")
 
             # Send email
+            logger.info(f"🚀 Attempting to send email via SMTP...")
             await self._send_message(msg)
-            logger.info(f"OTP email sent successfully to {email}")
+            logger.info(f"✅ Email sent successfully to {email} with OTP: {otp_code}")
             return True
 
         except Exception as e:
-            logger.error(f"Failed to send OTP email to {email}: {str(e)}")
+            logger.error(f"❌ Failed to send email to {email}: {str(e)}")
+            logger.error(f"💡 Email details - From: {self.from_email}, To: {email}, OTP: {otp_code}")
             return False
 
     async def _send_message(self, msg):
         """Send email message via SMTP"""
+        logger.info(f"🔌 Connecting to SMTP server: {self.smtp_host}:{self.smtp_port}")
+
         loop = asyncio.get_event_loop()
 
         def _sync_send():
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_username, self.smtp_password)
-                server.send_message(msg)
+            try:
+                logger.info(f"🌐 Creating SMTP connection...")
+                with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=30) as server:
+                    logger.info(f"🔐 Starting TLS encryption...")
+                    server.starttls()
+
+                    logger.info(f"👤 Logging in with username: {self.smtp_username}")
+                    server.login(self.smtp_username, self.smtp_password)
+                    logger.info(f"✅ SMTP login successful")
+
+                    logger.info(f"📤 Sending message...")
+                    server.send_message(msg)
+                    logger.info(f"🎉 Message sent successfully via SMTP")
+
+            except smtplib.SMTPAuthenticationError as e:
+                logger.error(f"🔑 SMTP Authentication failed: {str(e)}")
+                logger.error(f"💡 Check your SMTP_USERNAME and SMTP_PASSWORD")
+                raise
+            except smtplib.SMTPRecipientsRefused as e:
+                logger.error(f"📧 Recipient refused: {str(e)}")
+                raise
+            except smtplib.SMTPServerDisconnected as e:
+                logger.error(f"🔌 SMTP server disconnected: {str(e)}")
+                raise
+            except Exception as e:
+                logger.error(f"💥 SMTP error: {str(e)}")
+                raise
 
         await loop.run_in_executor(None, _sync_send)
 
