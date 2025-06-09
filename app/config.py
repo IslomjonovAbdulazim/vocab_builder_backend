@@ -13,8 +13,8 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_days: int = 100
 
-    # Gmail SMTP Settings
-    smtp_host: str = "smtp.gmail.com"
+    # Timeweb SMTP Settings
+    smtp_host: str = "smtp.timeweb.ru"
     smtp_port: int = 465
     smtp_username: str
     smtp_password: str

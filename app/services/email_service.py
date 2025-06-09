@@ -6,7 +6,7 @@ from app.config import settings
 
 
 def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send OTP email via Gmail SMTP SSL (port 465)"""
+    """Send OTP email via Timeweb SMTP SSL (port 465)"""
 
     if purpose == "reset":
         subject = "Reset Your VocabBuilder Password"
@@ -73,7 +73,7 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
     </html>
     """
 
-    print(f"🔍 Sending OTP email to {email} via Gmail SMTP SSL (port 465)...")
+    print(f"🔍 Sending OTP email to {email} via Timeweb SMTP SSL (port 465)...")
 
     # Retry logic for better reliability
     max_retries = 3
@@ -91,7 +91,7 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
             html_part = MIMEText(html_content, 'html', 'utf-8')
             msg.attach(html_part)
 
-            # Gmail SMTP SSL connection (port 465)
+            # Timeweb SMTP SSL connection (port 465)
             with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
                 print(f"🔗 Connected to {settings.smtp_host}:{settings.smtp_port}")
 
@@ -103,7 +103,7 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
                 # Send email
                 server.send_message(msg)
 
-            print(f"✅ Email sent successfully via Gmail SMTP SSL!")
+            print(f"✅ Email sent successfully via Timeweb SMTP SSL!")
             print(f"   📧 From: {settings.from_email}")
             print(f"   📧 To: {email}")
             print(f"   🔢 OTP: {otp_code}")
@@ -111,20 +111,19 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
             return True
 
         except smtplib.SMTPAuthenticationError as e:
-            print(f"❌ Gmail Authentication Error (attempt {attempt + 1}): {e}")
+            print(f"❌ Timeweb Authentication Error (attempt {attempt + 1}): {e}")
             if attempt == max_retries - 1:
-                print("💡 Troubleshooting Gmail SMTP:")
-                print("   1. Check 2FA is enabled: https://myaccount.google.com/security")
-                print("   2. Generate new App Password: https://myaccount.google.com/apppasswords")
-                print("   3. Use the 16-character app password (no spaces)")
-                print("   4. Check for security notifications in Gmail")
-                print(f"   5. Current username: {settings.smtp_username}")
-                print(f"   6. Current password: {settings.smtp_password[:4]}...")
+                print("💡 Troubleshooting Timeweb SMTP:")
+                print("   1. Check your email account credentials")
+                print("   2. Verify your email password is correct")
+                print("   3. Ensure email service is active in Timeweb panel")
+                print(f"   4. Current username: {settings.smtp_username}")
+                print(f"   5. Current password: {settings.smtp_password[:4]}...")
                 return False
             time.sleep(retry_delay)
 
         except smtplib.SMTPServerDisconnected as e:
-            print(f"❌ Gmail Server Disconnected (attempt {attempt + 1}): {e}")
+            print(f"❌ Timeweb Server Disconnected (attempt {attempt + 1}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
@@ -135,7 +134,7 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
             return False  # Don't retry for invalid recipients
 
         except Exception as e:
-            print(f"❌ Gmail SMTP failed (attempt {attempt + 1}): {e}")
+            print(f"❌ Timeweb SMTP failed (attempt {attempt + 1}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
