@@ -6,7 +6,7 @@ from app.config import settings
 
 
 def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send OTP email via Timeweb SMTP SSL (port 465)"""
+    """Send OTP email via Timeweb SMTP TLS (port 587)"""
 
     if purpose == "reset":
         subject = "Reset Your VocabBuilder Password"
@@ -73,7 +73,7 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
     </html>
     """
 
-    print(f"🔍 Sending OTP email to {email} via Timeweb SMTP SSL (port 465)...")
+    print(f"🔍 Sending OTP email to {email} via Timeweb SMTP TLS (port 587)...")
 
     # Retry logic for better reliability
     max_retries = 3
@@ -91,19 +91,22 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
             html_part = MIMEText(html_content, 'html', 'utf-8')
             msg.attach(html_part)
 
-            # Timeweb SMTP SSL connection (port 465)
-            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
+            # Timeweb SMTP TLS connection (port 587)
+            with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
                 print(f"🔗 Connected to {settings.smtp_host}:{settings.smtp_port}")
 
+                # Start TLS encryption
+                server.starttls()
+                print("🔒 Started TLS encryption")
+
                 # Authenticate
-                server.ehlo()
                 server.login(settings.smtp_username, settings.smtp_password)
                 print(f"✅ Authenticated as {settings.smtp_username}")
 
                 # Send email
                 server.send_message(msg)
 
-            print(f"✅ Email sent successfully via Timeweb SMTP SSL!")
+            print(f"✅ Email sent successfully via Timeweb SMTP TLS!")
             print(f"   📧 From: {settings.from_email}")
             print(f"   📧 To: {email}")
             print(f"   🔢 OTP: {otp_code}")
@@ -132,6 +135,13 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
         except smtplib.SMTPRecipientsRefused as e:
             print(f"❌ Recipient Refused (attempt {attempt + 1}): {e}")
             return False  # Don't retry for invalid recipients
+
+        except ConnectionError as e:
+            print(f"❌ Connection Error (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return False
 
         except Exception as e:
             print(f"❌ Timeweb SMTP failed (attempt {attempt + 1}): {e}")

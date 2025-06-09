@@ -13,9 +13,9 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_days: int = 100
 
-    # Timeweb SMTP Settings
+    # Timeweb SMTP Settings (Port 587 TLS)
     smtp_host: str = "smtp.timeweb.ru"
-    smtp_port: int = 465
+    smtp_port: int = 587
     smtp_username: str
     smtp_password: str
     from_email: str
