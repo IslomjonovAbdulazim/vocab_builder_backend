@@ -9,25 +9,18 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Email service with multiple port fallback for server compatibility"""
+    """Simple, reliable email service for OTP delivery"""
 
     def __init__(self):
         self.smtp_host = settings.smtp_host
+        self.smtp_port = settings.smtp_port
         self.smtp_username = settings.smtp_username
         self.smtp_password = settings.smtp_password
         self.from_email = settings.from_email
         self.from_name = settings.from_name
 
-        # Try these ports in order - some servers allow different ports
-        self.smtp_ports = [
-            {"port": 587, "tls": True, "name": "SMTP TLS (587)"},
-            {"port": 2525, "tls": True, "name": "Alternative TLS (2525)"},
-            {"port": 465, "tls": False, "ssl": True, "name": "SMTP SSL (465)"},
-            {"port": 25, "tls": True, "name": "Standard SMTP (25)"}
-        ]
-
     async def send_otp_email(self, email: str, otp_code: str, purpose: str = "verification") -> bool:
-        """Send OTP email with port fallback - returns True if successful"""
+        """Send OTP email - returns True if successful, False otherwise"""
         logger.info(f"📧 Starting email send process to {email} (purpose: {purpose}, OTP: {otp_code})")
 
         try:
@@ -60,79 +53,50 @@ class EmailService:
             msg.attach(html_part)
             logger.info(f"📎 Email content attached (text + HTML)")
 
-            # Try sending with different ports
-            success = await self._send_with_fallback(msg)
-
-            if success:
-                logger.info(f"✅ Email sent successfully to {email} with OTP: {otp_code}")
-                return True
-            else:
-                logger.error(f"❌ All SMTP ports failed for {email}")
-                return False
+            # Send email
+            logger.info(f"🚀 Attempting to send email via SMTP...")
+            await self._send_message(msg)
+            logger.info(f"✅ Email sent successfully to {email} with OTP: {otp_code}")
+            return True
 
         except Exception as e:
             logger.error(f"❌ Failed to send email to {email}: {str(e)}")
             logger.error(f"💡 Email details - From: {self.from_email}, To: {email}, OTP: {otp_code}")
             return False
 
-    async def _send_with_fallback(self, msg):
-        """Try sending email with different port configurations"""
-
-        for config in self.smtp_ports:
-            try:
-                logger.info(f"🚀 Attempting {config['name']} on port {config['port']}...")
-                await self._send_message(msg, config)
-                logger.info(f"🎉 Email sent successfully via {config['name']}")
-                return True
-
-            except Exception as e:
-                logger.warning(f"⚠️ {config['name']} failed: {str(e)}")
-                continue
-
-        return False
-
-    async def _send_message(self, msg, config):
-        """Send email message via SMTP with specific port config"""
-        logger.info(f"🔌 Connecting to {self.smtp_host}:{config['port']}")
+    async def _send_message(self, msg):
+        """Send email message via SMTP"""
+        logger.info(f"🔌 Connecting to SMTP server: {self.smtp_host}:{self.smtp_port}")
 
         loop = asyncio.get_event_loop()
 
         def _sync_send():
             try:
-                if config.get('ssl', False):
-                    # Use SSL (port 465)
-                    logger.info(f"🔒 Creating SSL SMTP connection...")
-                    server = smtplib.SMTP_SSL(self.smtp_host, config['port'], timeout=15)
-                else:
-                    # Use regular SMTP with optional TLS
-                    logger.info(f"🌐 Creating SMTP connection...")
-                    server = smtplib.SMTP(self.smtp_host, config['port'], timeout=15)
+                logger.info(f"🌐 Creating SMTP connection...")
+                with smtplib.SMTP(self.smtp_host, self.smtp_port, timeout=30) as server:
+                    logger.info(f"🔐 Starting TLS encryption...")
+                    server.starttls()
 
-                    if config.get('tls', False):
-                        logger.info(f"🔐 Starting TLS encryption...")
-                        server.starttls()
+                    logger.info(f"👤 Logging in with username: {self.smtp_username}")
+                    server.login(self.smtp_username, self.smtp_password)
+                    logger.info(f"✅ SMTP login successful")
 
-                logger.info(f"👤 Logging in with username: {self.smtp_username}")
-                server.login(self.smtp_username, self.smtp_password)
-                logger.info(f"✅ SMTP login successful")
-
-                logger.info(f"📤 Sending message...")
-                server.send_message(msg)
-                logger.info(f"📧 Message delivered via {config['name']}")
-
-                server.quit()
+                    logger.info(f"📤 Sending message...")
+                    server.send_message(msg)
+                    logger.info(f"🎉 Message sent successfully via SMTP")
 
             except smtplib.SMTPAuthenticationError as e:
-                logger.error(f"🔑 Authentication failed on {config['name']}: {str(e)}")
+                logger.error(f"🔑 SMTP Authentication failed: {str(e)}")
+                logger.error(f"💡 Check your SMTP_USERNAME and SMTP_PASSWORD")
                 raise
             except smtplib.SMTPRecipientsRefused as e:
-                logger.error(f"📧 Recipient refused on {config['name']}: {str(e)}")
+                logger.error(f"📧 Recipient refused: {str(e)}")
                 raise
             except smtplib.SMTPServerDisconnected as e:
-                logger.error(f"🔌 Server disconnected on {config['name']}: {str(e)}")
+                logger.error(f"🔌 SMTP server disconnected: {str(e)}")
                 raise
             except Exception as e:
-                logger.error(f"💥 Error on {config['name']}: {str(e)}")
+                logger.error(f"💥 SMTP error: {str(e)}")
                 raise
 
         await loop.run_in_executor(None, _sync_send)
