@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Email service with Timeweb SMTP port fallback"""
+    """Production email service with minimal logging"""
 
     def __init__(self):
         self.smtp_host = settings.smtp_host
@@ -27,7 +27,6 @@ class EmailService:
 
     async def send_otp_email(self, email: str, otp_code: str, purpose: str = "verification") -> bool:
         """Send OTP email with Timeweb port fallback - returns True if successful"""
-        logger.info(f"📧 Starting email send process to {email} (purpose: {purpose}, OTP: {otp_code})")
 
         try:
             # Create message
@@ -37,15 +36,12 @@ class EmailService:
             if purpose == "reset":
                 msg['Subject'] = "Reset Your VocabBuilder Password"
                 message_text = f"Your password reset code: {otp_code}\n\nThis code expires in 5 minutes."
-                logger.info(f"📝 Created password reset message for {email}")
             else:
                 msg['Subject'] = "Verify Your VocabBuilder Account"
                 message_text = f"Your verification code: {otp_code}\n\nThis code expires in 5 minutes."
-                logger.info(f"📝 Created verification message for {email}")
 
             msg['From'] = f"{self.from_name} <{self.from_email}>"
             msg['To'] = email
-            logger.info(f"📮 Email headers set - From: {self.from_email}, To: {email}")
 
             # Create plain text version
             text_part = MIMEText(message_text, 'plain', 'utf-8')
@@ -57,21 +53,19 @@ class EmailService:
             # Attach both versions
             msg.attach(text_part)
             msg.attach(html_part)
-            logger.info(f"📎 Email content attached (text + HTML)")
 
             # Try sending with Timeweb ports
             success = await self._send_with_timeweb_ports(msg)
 
             if success:
-                logger.info(f"✅ Email sent successfully to {email} with OTP: {otp_code}")
+                logger.info(f"Email sent to {email}")
                 return True
             else:
-                logger.error(f"❌ All Timeweb SMTP ports failed for {email}")
+                logger.error(f"Email failed to {email}")
                 return False
 
         except Exception as e:
-            logger.error(f"❌ Failed to send email to {email}: {str(e)}")
-            logger.error(f"💡 Email details - From: {self.from_email}, To: {email}, OTP: {otp_code}")
+            logger.error(f"Email error: {str(e)}")
             return False
 
     async def _send_with_timeweb_ports(self, msg):
@@ -79,60 +73,32 @@ class EmailService:
 
         for config in self.smtp_ports:
             try:
-                logger.info(f"🚀 Attempting {config['name']} on port {config['port']}...")
                 await self._send_message(msg, config)
-                logger.info(f"🎉 Email sent successfully via {config['name']}")
                 return True
-
-            except Exception as e:
-                logger.warning(f"⚠️ {config['name']} failed: {str(e)}")
+            except Exception:
                 continue
 
         return False
 
     async def _send_message(self, msg, config):
         """Send email message via SMTP with specific Timeweb port config"""
-        logger.info(f"🔌 Connecting to {self.smtp_host}:{config['port']}")
 
         loop = asyncio.get_event_loop()
 
         def _sync_send():
-            try:
-                if config.get('ssl', False):
-                    # Use SSL (port 465)
-                    logger.info(f"🔒 Creating SSL SMTP connection...")
-                    server = smtplib.SMTP_SSL(self.smtp_host, config['port'], timeout=15)
-                else:
-                    # Use regular SMTP with optional TLS
-                    logger.info(f"🌐 Creating SMTP connection...")
-                    server = smtplib.SMTP(self.smtp_host, config['port'], timeout=15)
+            if config.get('ssl', False):
+                # Use SSL (port 465)
+                server = smtplib.SMTP_SSL(self.smtp_host, config['port'], timeout=10)
+            else:
+                # Use regular SMTP with optional TLS
+                server = smtplib.SMTP(self.smtp_host, config['port'], timeout=10)
 
-                    if config.get('tls', False):
-                        logger.info(f"🔐 Starting TLS encryption...")
-                        server.starttls()
+                if config.get('tls', False):
+                    server.starttls()
 
-                logger.info(f"👤 Logging in with username: {self.smtp_username}")
-                server.login(self.smtp_username, self.smtp_password)
-                logger.info(f"✅ SMTP login successful")
-
-                logger.info(f"📤 Sending message...")
-                server.send_message(msg)
-                logger.info(f"📧 Message delivered via {config['name']}")
-
-                server.quit()
-
-            except smtplib.SMTPAuthenticationError as e:
-                logger.error(f"🔑 Authentication failed on {config['name']}: {str(e)}")
-                raise
-            except smtplib.SMTPRecipientsRefused as e:
-                logger.error(f"📧 Recipient refused on {config['name']}: {str(e)}")
-                raise
-            except smtplib.SMTPServerDisconnected as e:
-                logger.error(f"🔌 Server disconnected on {config['name']}: {str(e)}")
-                raise
-            except Exception as e:
-                logger.error(f"💥 Error on {config['name']}: {str(e)}")
-                raise
+            server.login(self.smtp_username, self.smtp_password)
+            server.send_message(msg)
+            server.quit()
 
         await loop.run_in_executor(None, _sync_send)
 
