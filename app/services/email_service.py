@@ -1,10 +1,12 @@
-import requests
-import json
+import smtplib
+import time
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from app.config import settings
 
 
 def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send OTP email using MailerSend HTTP API (no SMTP blocking issues)"""
+    """Send OTP email via Gmail SMTP SSL (port 465)"""
 
     if purpose == "reset":
         subject = "Reset Your VocabBuilder Password"
@@ -71,39 +73,72 @@ def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> 
     </html>
     """
 
-    print(f"🔍 Sending OTP email to {email} via MailerSend HTTP API...")
+    print(f"🔍 Sending OTP email to {email} via Gmail SMTP SSL (port 465)...")
 
-    try:
-        # MailerSend HTTP API call (no SMTP blocking!)
-        response = requests.post(
-            "https://api.mailersend.com/v1/email",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {settings.mailersend_token}"
-            },
-            json={
-                "from": {
-                    "email": settings.from_email,
-                    "name": settings.from_name
-                },
-                "to": [{"email": email}],
-                "subject": subject,
-                "html": html_content
-            },
-            timeout=10
-        )
+    # Retry logic for better reliability
+    max_retries = 3
+    retry_delay = 2
 
-        if response.status_code in [200, 201, 202]:
-            print(f"✅ Email sent successfully via MailerSend!")
+    for attempt in range(max_retries):
+        try:
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = f"{settings.from_name} <{settings.from_email}>"
+            msg['To'] = email
+
+            # Add HTML content
+            html_part = MIMEText(html_content, 'html', 'utf-8')
+            msg.attach(html_part)
+
+            # Gmail SMTP SSL connection (port 465)
+            with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as server:
+                print(f"🔗 Connected to {settings.smtp_host}:{settings.smtp_port}")
+
+                # Authenticate
+                server.ehlo()
+                server.login(settings.smtp_username, settings.smtp_password)
+                print(f"✅ Authenticated as {settings.smtp_username}")
+
+                # Send email
+                server.send_message(msg)
+
+            print(f"✅ Email sent successfully via Gmail SMTP SSL!")
             print(f"   📧 From: {settings.from_email}")
             print(f"   📧 To: {email}")
             print(f"   🔢 OTP: {otp_code}")
+            print(f"   🔄 Attempt: {attempt + 1}")
             return True
-        else:
-            print(f"❌ MailerSend failed: {response.status_code}")
-            print(f"   Response: {response.text}")
+
+        except smtplib.SMTPAuthenticationError as e:
+            print(f"❌ Gmail Authentication Error (attempt {attempt + 1}): {e}")
+            if attempt == max_retries - 1:
+                print("💡 Troubleshooting Gmail SMTP:")
+                print("   1. Check 2FA is enabled: https://myaccount.google.com/security")
+                print("   2. Generate new App Password: https://myaccount.google.com/apppasswords")
+                print("   3. Use the 16-character app password (no spaces)")
+                print("   4. Check for security notifications in Gmail")
+                print(f"   5. Current username: {settings.smtp_username}")
+                print(f"   6. Current password: {settings.smtp_password[:4]}...")
+                return False
+            time.sleep(retry_delay)
+
+        except smtplib.SMTPServerDisconnected as e:
+            print(f"❌ Gmail Server Disconnected (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
             return False
 
-    except Exception as e:
-        print(f"❌ MailerSend error: {e}")
-        return False
+        except smtplib.SMTPRecipientsRefused as e:
+            print(f"❌ Recipient Refused (attempt {attempt + 1}): {e}")
+            return False  # Don't retry for invalid recipients
+
+        except Exception as e:
+            print(f"❌ Gmail SMTP failed (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            return False
+
+    return False
