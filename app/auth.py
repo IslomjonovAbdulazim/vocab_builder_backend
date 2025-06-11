@@ -55,6 +55,17 @@ class UserProfileUpdate(BaseModel):
 
 
 # ================================
+# FLUTTER-COMPATIBLE RESPONSE MODEL
+# ================================
+
+class AuthResponse(BaseModel):
+    status_code: int
+    details: str
+    is_success: bool
+    token: Optional[str] = None
+
+
+# ================================
 # OTP MANAGEMENT
 # ================================
 
@@ -97,7 +108,7 @@ def verify_otp(db: Session, email: str, code: str) -> bool:
 # AUTHENTICATION ENDPOINTS
 # ================================
 
-@router.post("/register", response_model=StandardResponse)
+@router.post("/register", response_model=AuthResponse)
 async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     """Register new user"""
     # Clean up first
@@ -136,14 +147,14 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     # Send OTP
     create_otp(db, request.email, "verification")
 
-    return StandardResponse(
+    return AuthResponse(
         status_code=201,
         is_success=True,
         details="Registration successful. Please verify your email."
     )
 
 
-@router.post("/login", response_model=StandardResponse)
+@router.post("/login", response_model=AuthResponse)
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """User login"""
     cleanup_expired_otps(db)
@@ -161,15 +172,15 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 
     # Create token
     token = create_access_token(request.email)
-    return StandardResponse(
+    return AuthResponse(
         status_code=200,
         is_success=True,
         details="Login successful",
-        data={"token": token}
+        token=token
     )
 
 
-@router.post("/verify-email", response_model=StandardResponse)
+@router.post("/verify-email", response_model=AuthResponse)
 async def verify_email(request: VerifyEmailRequest, db: Session = Depends(get_db)):
     """Verify email with OTP"""
     cleanup_expired_otps(db)
@@ -188,15 +199,15 @@ async def verify_email(request: VerifyEmailRequest, db: Session = Depends(get_db
 
     # Create token
     token = create_access_token(request.email)
-    return StandardResponse(
+    return AuthResponse(
         status_code=200,
         is_success=True,
         details="Email verified successfully",
-        data={"token": token}
+        token=token
     )
 
 
-@router.post("/forgot-password", response_model=StandardResponse)
+@router.post("/forgot-password", response_model=AuthResponse)
 async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
     """Send password reset OTP"""
     cleanup_expired_otps(db)
@@ -209,14 +220,14 @@ async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(
 
     # Send reset OTP
     create_otp(db, request.email, "reset")
-    return StandardResponse(
+    return AuthResponse(
         status_code=200,
         is_success=True,
         details="Password reset code sent to your email"
     )
 
 
-@router.post("/reset-password", response_model=StandardResponse)
+@router.post("/reset-password", response_model=AuthResponse)
 async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
     """Reset password (should be called after OTP verification)"""
     # Validate password
@@ -234,11 +245,11 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
 
     # Create new token
     token = create_access_token(request.email)
-    return StandardResponse(
+    return AuthResponse(
         status_code=200,
         is_success=True,
         details="Password reset successful",
-        data={"token": token}
+        token=token
     )
 
 
