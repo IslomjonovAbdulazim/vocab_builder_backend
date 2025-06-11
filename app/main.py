@@ -1,8 +1,9 @@
+# app/main.py
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from app.database import engine, Base
-from app.api import auth, users
+from app.api import auth, users, folders, quiz
 
 # Configure logging
 logging.basicConfig(
@@ -39,6 +40,10 @@ async def startup():
 # Include API routes
 app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
 app.include_router(users.router, prefix="/auth", tags=["Users"])
+
+# NEW MVP ROUTES
+app.include_router(folders.router, prefix="/folders", tags=["Folders"])
+app.include_router(quiz.router, prefix="/quiz", tags=["Quiz"])
 
 
 @app.get("/")
