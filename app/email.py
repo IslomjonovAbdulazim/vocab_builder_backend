@@ -1,3 +1,4 @@
+# app/email.py - Simplified email service
 import smtplib
 import asyncio
 from email.mime.text import MIMEText
@@ -9,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Production email service with minimal logging"""
+    """Simple email service for sending OTPs"""
 
     def __init__(self):
         self.smtp_host = settings.smtp_host
@@ -18,81 +19,70 @@ class EmailService:
         self.from_email = settings.from_email
         self.from_name = settings.from_name
 
-        # Timeweb SMTP ports from official documentation
-        self.smtp_ports = [
-            {"port": 2525, "tls": True, "name": "Timeweb TLS (2525)"},
-            {"port": 25, "tls": True, "name": "Timeweb Standard (25)"},
-            {"port": 465, "tls": False, "ssl": True, "name": "Timeweb SSL (465)"}
-        ]
-
     async def send_otp_email(self, email: str, otp_code: str, purpose: str = "verification") -> bool:
-        """Send OTP email with Timeweb port fallback - returns True if successful"""
-
+        """Send OTP email - returns True if successful"""
         try:
             # Create message
             msg = MIMEMultipart('alternative')
 
-            # Set headers
+            # Set subject and content based on purpose
             if purpose == "reset":
                 msg['Subject'] = "Reset Your VocabBuilder Password"
-                message_text = f"Your password reset code: {otp_code}\n\nThis code expires in 5 minutes."
+                text_content = f"Your password reset code: {otp_code}\n\nThis code expires in 5 minutes."
             else:
                 msg['Subject'] = "Verify Your VocabBuilder Account"
-                message_text = f"Your verification code: {otp_code}\n\nThis code expires in 5 minutes."
+                text_content = f"Your verification code: {otp_code}\n\nThis code expires in 5 minutes."
 
             msg['From'] = f"{self.from_name} <{self.from_email}>"
             msg['To'] = email
 
-            # Create plain text version
-            text_part = MIMEText(message_text, 'plain', 'utf-8')
+            # Create text and HTML versions
+            text_part = MIMEText(text_content, 'plain', 'utf-8')
+            html_part = MIMEText(self._create_html_email(otp_code, purpose), 'html', 'utf-8')
 
-            # Create HTML version
-            html_content = self._create_html_email(otp_code, purpose)
-            html_part = MIMEText(html_content, 'html', 'utf-8')
-
-            # Attach both versions
             msg.attach(text_part)
             msg.attach(html_part)
 
-            # Try sending with Timeweb ports
-            success = await self._send_with_timeweb_ports(msg)
+            # Send email
+            success = await self._send_with_smtp(msg)
 
             if success:
-                logger.info(f"Email sent to {email}")
-                return True
+                logger.info(f"✅ Email sent to {email}")
             else:
-                logger.error(f"Email failed to {email}")
-                return False
+                logger.error(f"❌ Email failed to {email}")
+
+            return success
 
         except Exception as e:
-            logger.error(f"Email error: {str(e)}")
+            logger.error(f"❌ Email error: {str(e)}")
             return False
 
-    async def _send_with_timeweb_ports(self, msg):
-        """Try sending email with different Timeweb port configurations"""
+    async def _send_with_smtp(self, msg):
+        """Send email via SMTP with multiple port fallback"""
+        # Timeweb SMTP configurations
+        configs = [
+            {"port": 2525, "tls": True},
+            {"port": 25, "tls": True},
+            {"port": 465, "ssl": True}
+        ]
 
-        for config in self.smtp_ports:
+        for config in configs:
             try:
                 await self._send_message(msg, config)
                 return True
             except Exception:
                 continue
-
         return False
 
     async def _send_message(self, msg, config):
-        """Send email message via SMTP with specific Timeweb port config"""
-
+        """Send message with specific SMTP configuration"""
         loop = asyncio.get_event_loop()
 
         def _sync_send():
             if config.get('ssl', False):
-                # Use SSL (port 465)
                 server = smtplib.SMTP_SSL(self.smtp_host, config['port'], timeout=10)
             else:
-                # Use regular SMTP with optional TLS
                 server = smtplib.SMTP(self.smtp_host, config['port'], timeout=10)
-
                 if config.get('tls', False):
                     server.starttls()
 
@@ -103,7 +93,7 @@ class EmailService:
         await loop.run_in_executor(None, _sync_send)
 
     def _create_html_email(self, otp_code: str, purpose: str) -> str:
-        """Create simple HTML email"""
+        """Create beautiful HTML email"""
         if purpose == "reset":
             title = "Reset Your Password"
             message = "You requested to reset your password. Use the code below:"
@@ -164,16 +154,12 @@ class EmailService:
         </html>
         """
 
-# Global instance
+
+# Global email service instance
 email_service = EmailService()
 
 
-# Simple function for backward compatibility
-def send_otp_email(email: str, otp_code: str, purpose: str = "verification"):
-    """Synchronous wrapper - DEPRECATED, use email_service.send_otp_email() instead"""
-    try:
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(email_service.send_otp_email(email, otp_code, purpose))
-    except RuntimeError:
-        # No event loop running, create one
-        return asyncio.run(email_service.send_otp_email(email, otp_code, purpose))
+# Simple function wrapper for backwards compatibility
+async def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
+    """Send OTP email - simple wrapper function"""
+    return await email_service.send_otp_email(email, otp_code, purpose)
