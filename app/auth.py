@@ -257,6 +257,22 @@ async def reset_password(request: ResetPasswordRequest, db: Session = Depends(ge
 # USER PROFILE ENDPOINTS
 # ================================
 
+@router.get("/test-token", response_model=StandardResponse)
+async def test_token(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    """Test endpoint to verify token is working"""
+    user = db.query(User).filter(User.id == user_id).first()
+    return StandardResponse(
+        status_code=200,
+        is_success=True,
+        details="Token is valid!",
+        data={
+            "user_id": user.id,
+            "email": user.email,
+            "username": user.username
+        }
+    )
+
+
 @router.get("/profile", response_model=StandardResponse)
 async def get_profile(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
     """Get user profile"""

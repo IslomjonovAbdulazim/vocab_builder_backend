@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import HTTPException, Depends, Header, UploadFile
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -15,6 +16,9 @@ from app.database import get_db
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# OAuth2 scheme for token authentication
+security = HTTPBearer()
 
 
 # ================================
@@ -63,16 +67,15 @@ def verify_token(token: str) -> str | None:
         return None
 
 
-def get_current_user_email(authorization: str = Header(None)):
-    """Extract email from JWT token"""
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization")
-
-    token = authorization.split(" ")[1]
-    email = verify_token(token)
-    if not email:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
-    return email
+def get_current_user_email(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Extract email from JWT token using FastAPI's HTTPBearer"""
+    try:
+        email = verify_token(credentials.credentials)
+        if not email:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+        return email
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token format")
 
 
 def get_current_user_id(current_email: str = Depends(get_current_user_email), db: Session = Depends(get_db)) -> int:
