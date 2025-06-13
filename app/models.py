@@ -56,6 +56,7 @@ class Folder(Base):
     owner_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     share_code = Column(String, unique=True, index=True, nullable=False)
     is_shareable = Column(Boolean, default=True)
+    shared_at = Column(DateTime(timezone=True), server_default=func.now())  # Track when sharing was enabled
 
     # Stats
     total_words = Column(Integer, default=0)
@@ -81,6 +82,7 @@ class VocabItem(Base):
     example_sentence = Column(Text, nullable=True)
     order_index = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships
     folder = relationship("Folder", back_populates="vocab_items")

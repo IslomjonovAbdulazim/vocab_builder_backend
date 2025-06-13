@@ -151,11 +151,27 @@ def check_folder_access(folder, user_id: int, db: Session) -> bool:
     return copy_exists is not None
 
 
+def is_folder_share_valid(folder) -> bool:
+    """Check if folder sharing is still valid (within 24 hours)"""
+    if not folder.is_shareable or not folder.shared_at:
+        return False
+
+    # Check if shared_at is within 24 hours
+    time_limit = folder.shared_at + timedelta(hours=24)
+    return datetime.utcnow() < time_limit
+
+
 def update_folder_word_count(folder, db: Session):
     """Update folder's word count"""
     from app.models import VocabItem
     count = db.query(VocabItem).filter(VocabItem.folder_id == folder.id).count()
     folder.total_words = count
+    db.commit()
+
+
+def refresh_folder_share(folder, db: Session):
+    """Refresh folder share timestamp (reset 24-hour timer)"""
+    folder.shared_at = datetime.utcnow()
     db.commit()
 
 

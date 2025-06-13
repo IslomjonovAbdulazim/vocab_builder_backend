@@ -8,7 +8,8 @@ from app.database import get_db
 from app.models import Folder, VocabItem, FolderCopy, User
 from app.utils import (
     StandardResponse, get_current_user_id, generate_share_code,
-    validate_vocabulary_item, check_folder_access, update_folder_word_count
+    validate_vocabulary_item, check_folder_access, update_folder_word_count,
+    is_folder_share_valid, refresh_folder_share
 )
 
 router = APIRouter()
@@ -46,10 +47,6 @@ class FolderCopyRequest(BaseModel):
     share_code: str
 
 
-class BulkVocabImport(BaseModel):
-    items: List[VocabItemCreate]
-
-
 # ================================
 # FOLDER MANAGEMENT
 # ================================
@@ -66,11 +63,13 @@ async def get_my_folders(user_id: int = Depends(get_current_user_id), db: Sessio
             "description": folder.description,
             "share_code": folder.share_code,
             "is_shareable": folder.is_shareable,
+            "is_share_valid": is_folder_share_valid(folder),
             "total_words": folder.total_words,
             "total_copies": folder.total_copies,
             "total_quizzes": folder.total_quizzes,
             "created_at": folder.created_at,
-            "updated_at": folder.updated_at
+            "updated_at": folder.updated_at,
+            "shared_at": folder.shared_at
         }
         for folder in folders
     ]
@@ -130,8 +129,10 @@ async def create_folder(
                 "description": folder.description,
                 "share_code": folder.share_code,
                 "is_shareable": folder.is_shareable,
+                "is_share_valid": is_folder_share_valid(folder),
                 "total_words": folder.total_words,
-                "created_at": folder.created_at
+                "created_at": folder.created_at,
+                "shared_at": folder.shared_at
             }
         )
 
@@ -166,6 +167,7 @@ async def get_folder(
             "description": folder.description,
             "share_code": folder.share_code if folder.owner_id == user_id else None,
             "is_shareable": folder.is_shareable,
+            "is_share_valid": is_folder_share_valid(folder),
             "total_words": folder.total_words,
             "total_copies": folder.total_copies,
             "total_quizzes": folder.total_quizzes,
@@ -175,7 +177,8 @@ async def get_folder(
                 "name": folder.owner.name
             },
             "created_at": folder.created_at,
-            "updated_at": folder.updated_at
+            "updated_at": folder.updated_at,
+            "shared_at": folder.shared_at
         }
     )
 
@@ -264,6 +267,41 @@ async def delete_folder(
 # SHARE SYSTEM
 # ================================
 
+@router.post("/{folder_id}/refresh-share", response_model=StandardResponse)
+async def refresh_share_link(
+    folder_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """Refresh share link (reset 24-hour timer)"""
+    folder = db.query(Folder).filter(Folder.id == folder_id).first()
+
+    if not folder:
+        raise HTTPException(404, "Folder not found")
+
+    if folder.owner_id != user_id:
+        raise HTTPException(403, "Not authorized to refresh share link")
+
+    try:
+        # Refresh share timestamp
+        refresh_folder_share(folder, db)
+
+        return StandardResponse(
+            status_code=200,
+            is_success=True,
+            details="Share link refreshed successfully. Valid for 24 hours.",
+            data={
+                "share_code": folder.share_code,
+                "shared_at": folder.shared_at,
+                "is_share_valid": is_folder_share_valid(folder)
+            }
+        )
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(400, f"Error refreshing share link: {str(e)}")
+
+
 @router.post("/copy", response_model=StandardResponse)
 async def copy_folder(
     copy_request: FolderCopyRequest,
@@ -280,6 +318,10 @@ async def copy_folder(
 
         if not original_folder:
             raise HTTPException(400, "Invalid share code or folder not shareable")
+
+        # Check if share is still valid (within 24 hours)
+        if not is_folder_share_valid(original_folder):
+            raise HTTPException(400, "Share link has expired (24 hours limit)")
 
         # Check if user already copied this folder
         existing_copy = db.query(FolderCopy).filter(
@@ -382,6 +424,10 @@ async def get_share_info(folder_id: int, db: Session = Depends(get_db)):
     if not folder or not folder.is_shareable:
         raise HTTPException(404, "Folder not found or not shareable")
 
+    # Check if share is still valid (within 24 hours)
+    if not is_folder_share_valid(folder):
+        raise HTTPException(410, "Share link has expired (24 hours limit)")
+
     return StandardResponse(
         status_code=200,
         is_success=True,
@@ -396,7 +442,9 @@ async def get_share_info(folder_id: int, db: Session = Depends(get_db)):
                 "username": folder.owner.username,
                 "name": folder.owner.name
             },
-            "created_at": folder.created_at
+            "created_at": folder.created_at,
+            "shared_at": folder.shared_at,
+            "is_share_valid": is_folder_share_valid(folder)
         }
     )
 
@@ -433,7 +481,8 @@ async def get_folder_vocabulary(
             "definition": item.definition,
             "example_sentence": item.example_sentence,
             "order_index": item.order_index,
-            "created_at": item.created_at
+            "created_at": item.created_at,
+            "updated_at": item.updated_at
         }
         for item in vocab_items
     ]
@@ -506,7 +555,8 @@ async def add_vocabulary_item(
                 "definition": vocab_item.definition,
                 "example_sentence": vocab_item.example_sentence,
                 "order_index": vocab_item.order_index,
-                "created_at": vocab_item.created_at
+                "created_at": vocab_item.created_at,
+                "updated_at": vocab_item.updated_at
             }
         )
 
@@ -515,14 +565,15 @@ async def add_vocabulary_item(
         raise HTTPException(400, f"Error adding vocabulary: {str(e)}")
 
 
-@router.post("/{folder_id}/vocab/bulk", response_model=StandardResponse)
-async def bulk_import_vocabulary(
+@router.put("/{folder_id}/vocab/{vocab_id}", response_model=StandardResponse)
+async def update_vocabulary_item(
     folder_id: int,
-    bulk_data: BulkVocabImport,
+    vocab_id: int,
+    vocab_data: VocabItemUpdate,
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
 ):
-    """Bulk import vocabulary items"""
+    """Update vocabulary item"""
     # Check folder ownership
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
 
@@ -532,52 +583,104 @@ async def bulk_import_vocabulary(
     if folder.owner_id != user_id:
         raise HTTPException(403, "Not authorized to edit this folder")
 
-    imported_count = 0
-    failed_items = []
+    # Find vocabulary item
+    vocab_item = db.query(VocabItem).filter(
+        VocabItem.id == vocab_id,
+        VocabItem.folder_id == folder_id
+    ).first()
+
+    if not vocab_item:
+        raise HTTPException(404, "Vocabulary item not found")
 
     try:
-        for item_data in bulk_data.items:
-            # Validate each item
-            validation = validate_vocabulary_item(item_data.word, item_data.translation)
-            if not validation["is_valid"]:
-                failed_items.append({
-                    "word": item_data.word,
-                    "error": ", ".join(validation["errors"])
-                })
-                continue
+        # Update fields if provided
+        if vocab_data.word is not None:
+            if not vocab_data.word.strip():
+                raise HTTPException(400, "Word cannot be empty")
+            vocab_item.word = vocab_data.word.strip()
 
-            # Get next order index
-            max_order = db.query(VocabItem).filter(VocabItem.folder_id == folder_id).count()
+        if vocab_data.translation is not None:
+            if not vocab_data.translation.strip():
+                raise HTTPException(400, "Translation cannot be empty")
+            vocab_item.translation = vocab_data.translation.strip()
 
-            # Create vocabulary item
-            vocab_item = VocabItem(
-                folder_id=folder_id,
-                word=item_data.word.strip(),
-                translation=item_data.translation.strip(),
-                definition=item_data.definition.strip() if item_data.definition else None,
-                example_sentence=item_data.example_sentence.strip() if item_data.example_sentence else None,
-                order_index=max_order + imported_count + 1
-            )
+        if vocab_data.definition is not None:
+            vocab_item.definition = vocab_data.definition.strip() if vocab_data.definition.strip() else None
 
-            db.add(vocab_item)
-            imported_count += 1
+        if vocab_data.example_sentence is not None:
+            vocab_item.example_sentence = vocab_data.example_sentence.strip() if vocab_data.example_sentence.strip() else None
 
+        # Validate updated data
+        validation = validate_vocabulary_item(vocab_item.word, vocab_item.translation)
+        if not validation["is_valid"]:
+            raise HTTPException(400, ", ".join(validation["errors"]))
+
+        db.commit()
+        db.refresh(vocab_item)
+
+        return StandardResponse(
+            status_code=200,
+            is_success=True,
+            details="Vocabulary item updated successfully",
+            data={
+                "id": vocab_item.id,
+                "word": vocab_item.word,
+                "translation": vocab_item.translation,
+                "definition": vocab_item.definition,
+                "example_sentence": vocab_item.example_sentence,
+                "order_index": vocab_item.order_index,
+                "created_at": vocab_item.created_at,
+                "updated_at": vocab_item.updated_at
+            }
+        )
+
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(400, f"Error updating vocabulary: {str(e)}")
+
+
+@router.delete("/{folder_id}/vocab/{vocab_id}", response_model=StandardResponse)
+async def delete_vocabulary_item(
+    folder_id: int,
+    vocab_id: int,
+    user_id: int = Depends(get_current_user_id),
+    db: Session = Depends(get_db)
+):
+    """Delete vocabulary item"""
+    # Check folder ownership
+    folder = db.query(Folder).filter(Folder.id == folder_id).first()
+
+    if not folder:
+        raise HTTPException(404, "Folder not found")
+
+    if folder.owner_id != user_id:
+        raise HTTPException(403, "Not authorized to edit this folder")
+
+    # Find vocabulary item
+    vocab_item = db.query(VocabItem).filter(
+        VocabItem.id == vocab_id,
+        VocabItem.folder_id == folder_id
+    ).first()
+
+    if not vocab_item:
+        raise HTTPException(404, "Vocabulary item not found")
+
+    try:
+        # Delete vocabulary item
+        db.delete(vocab_item)
         db.commit()
 
         # Update folder word count
         update_folder_word_count(folder, db)
 
         return StandardResponse(
-            status_code=201,
+            status_code=200,
             is_success=True,
-            details=f"Bulk import completed. {imported_count} items imported successfully.",
-            data={
-                "imported_count": imported_count,
-                "failed_count": len(failed_items),
-                "failed_items": failed_items
-            }
+            details="Vocabulary item deleted successfully"
         )
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(400, f"Error during bulk import: {str(e)}")
+        raise HTTPException(400, f"Error deleting vocabulary: {str(e)}")
