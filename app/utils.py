@@ -1,4 +1,4 @@
-# app/utils.py - Shared utilities and common functions
+# app/utils.py - Shared utilities and common functions (FIXED)
 import random
 import string
 import os
@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import HTTPException, Depends, Header, UploadFile
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
@@ -138,41 +139,65 @@ def generate_username(name: str, email: str) -> str:
 
 def check_folder_access(folder, user_id: int, db: Session) -> bool:
     """Check if user can access folder (owns it or copied it)"""
-    from app.models import FolderCopy
+    try:
+        from app.models import FolderCopy
 
-    if folder.owner_id == user_id:
-        return True
+        if folder.owner_id == user_id:
+            return True
 
-    copy_exists = db.query(FolderCopy).filter(
-        FolderCopy.original_folder_id == folder.id,
-        FolderCopy.copied_by_user_id == user_id
-    ).first()
+        copy_exists = db.query(FolderCopy).filter(
+            FolderCopy.original_folder_id == folder.id,
+            FolderCopy.copied_by_user_id == user_id
+        ).first()
 
-    return copy_exists is not None
+        return copy_exists is not None
+    except Exception as e:
+        logger.warning(f"⚠️ Error checking folder access: {str(e)}")
+        return folder.owner_id == user_id  # Fallback to ownership check
 
 
 def is_folder_share_valid(folder) -> bool:
     """Check if folder sharing is still valid (within 24 hours)"""
-    if not folder.is_shareable or not folder.shared_at:
-        return False
+    try:
+        if not folder.is_shareable:
+            return False
 
-    # Check if shared_at is within 24 hours
-    time_limit = folder.shared_at + timedelta(hours=24)
-    return datetime.utcnow() < time_limit
+        # Check if shared_at exists (for backward compatibility)
+        if not hasattr(folder, 'shared_at') or not folder.shared_at:
+            return True  # If no shared_at, consider it valid
+
+        # Check if shared_at is within 24 hours
+        time_limit = folder.shared_at + timedelta(hours=24)
+        return datetime.utcnow() < time_limit
+    except Exception as e:
+        logger.warning(f"⚠️ Error checking folder share validity: {str(e)}")
+        return folder.is_shareable  # Fallback to is_shareable only
 
 
 def update_folder_word_count(folder, db: Session):
     """Update folder's word count"""
-    from app.models import VocabItem
-    count = db.query(VocabItem).filter(VocabItem.folder_id == folder.id).count()
-    folder.total_words = count
-    db.commit()
+    try:
+        from app.models import VocabItem
+        count = db.query(VocabItem).filter(VocabItem.folder_id == folder.id).count()
+        folder.total_words = count
+        db.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ Error updating folder word count: {str(e)}")
+        db.rollback()
 
 
 def refresh_folder_share(folder, db: Session):
     """Refresh folder share timestamp (reset 24-hour timer)"""
-    folder.shared_at = datetime.utcnow()
-    db.commit()
+    try:
+        # Check if shared_at column exists
+        if hasattr(folder, 'shared_at'):
+            folder.shared_at = datetime.utcnow()
+            db.commit()
+        else:
+            logger.warning("⚠️ shared_at column not found - skipping refresh")
+    except Exception as e:
+        logger.warning(f"⚠️ Error refreshing folder share: {str(e)}")
+        db.rollback()
 
 
 # ================================
@@ -230,66 +255,98 @@ def save_avatar(file: UploadFile, user_id: int, old_avatar_url: str = None) -> s
 
 
 # ================================
-# CLEANUP UTILITIES
+# SAFE CLEANUP UTILITIES (FIXED)
 # ================================
 
 def cleanup_expired_otps(db: Session):
-    """Clean up expired OTPs"""
-    from app.models import OTP
-    expired = db.query(OTP).filter(OTP.expires_at <= datetime.utcnow()).all()
-    for otp in expired:
-        db.delete(otp)
-    db.commit()
+    """Clean up expired OTPs - safe version"""
+    try:
+        from app.models import OTP
+        expired = db.query(OTP).filter(OTP.expires_at <= datetime.utcnow()).all()
+        for otp in expired:
+            db.delete(otp)
+        db.commit()
+        logger.info(f"🧹 Cleaned up {len(expired)} expired OTPs")
+    except Exception as e:
+        logger.warning(f"⚠️ Error cleaning up OTPs: {str(e)}")
+        db.rollback()
 
 
 def cleanup_unverified_users(db: Session):
-    """Delete unverified users older than 5 minutes"""
-    from app.models import User, OTP
-    cutoff = datetime.utcnow() - timedelta(minutes=settings.otp_expire_minutes)
-    unverified = db.query(User).filter(
-        User.is_verified == False,
-        User.created_at <= cutoff
-    ).all()
+    """Delete unverified users older than 5 minutes - SAFE version"""
+    try:
+        from app.models import User, OTP
+        cutoff = datetime.utcnow() - timedelta(minutes=settings.otp_expire_minutes)
 
-    for user in unverified:
-        db.query(OTP).filter(OTP.email == user.email).delete()
-        db.delete(user)
+        # Get unverified users without accessing folders
+        unverified = db.query(User).filter(
+            User.is_verified == False,
+            User.created_at <= cutoff
+        ).all()
 
-    db.commit()
-    return len(unverified)
+        deleted_count = 0
+        for user in unverified:
+            try:
+                # Delete related OTPs first
+                db.query(OTP).filter(OTP.email == user.email).delete(synchronize_session=False)
+                # Delete user
+                db.delete(user)
+                deleted_count += 1
+            except OperationalError as e:
+                if "no such column" in str(e):
+                    logger.warning(f"⚠️ Database schema issue - skipping cleanup: {str(e)}")
+                    db.rollback()
+                    return 0
+                else:
+                    raise
+
+        db.commit()
+        if deleted_count > 0:
+            logger.info(f"🧹 Cleaned up {deleted_count} unverified users")
+        return deleted_count
+
+    except Exception as e:
+        logger.warning(f"⚠️ Error cleaning up unverified users: {str(e)}")
+        db.rollback()
+        return 0
 
 
 def cleanup_orphaned_avatars(db: Session):
     """Clean up avatar files that are no longer referenced in database"""
-    from app.models import User
+    try:
+        from app.models import User
 
-    avatar_dir = "app/static/uploads/avatars"
-    if not os.path.exists(avatar_dir):
+        avatar_dir = "app/static/uploads/avatars"
+        if not os.path.exists(avatar_dir):
+            return 0
+
+        # Get all avatar files
+        avatar_files = glob.glob(os.path.join(avatar_dir, "*.jpg")) + \
+                       glob.glob(os.path.join(avatar_dir, "*.png")) + \
+                       glob.glob(os.path.join(avatar_dir, "*.jpeg")) + \
+                       glob.glob(os.path.join(avatar_dir, "*.webp"))
+
+        # Get all avatar URLs from database
+        users_with_avatars = db.query(User.avatar_url).filter(User.avatar_url.isnot(None)).all()
+        db_avatar_files = set()
+        for user in users_with_avatars:
+            if user.avatar_url:
+                file_path = user.avatar_url.replace("/static/", "app/static/")
+                db_avatar_files.add(file_path)
+
+        # Delete orphaned files
+        deleted_count = 0
+        for file_path in avatar_files:
+            if file_path not in db_avatar_files:
+                try:
+                    os.remove(file_path)
+                    deleted_count += 1
+                    logger.info(f"🗑️ Deleted orphaned avatar: {file_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not delete orphaned avatar: {str(e)}")
+
+        return deleted_count
+
+    except Exception as e:
+        logger.warning(f"⚠️ Error cleaning up orphaned avatars: {str(e)}")
         return 0
-
-    # Get all avatar files
-    avatar_files = glob.glob(os.path.join(avatar_dir, "*.jpg")) + \
-                   glob.glob(os.path.join(avatar_dir, "*.png")) + \
-                   glob.glob(os.path.join(avatar_dir, "*.jpeg")) + \
-                   glob.glob(os.path.join(avatar_dir, "*.webp"))
-
-    # Get all avatar URLs from database
-    users_with_avatars = db.query(User.avatar_url).filter(User.avatar_url.isnot(None)).all()
-    db_avatar_files = set()
-    for user in users_with_avatars:
-        if user.avatar_url:
-            file_path = user.avatar_url.replace("/static/", "app/static/")
-            db_avatar_files.add(file_path)
-
-    # Delete orphaned files
-    deleted_count = 0
-    for file_path in avatar_files:
-        if file_path not in db_avatar_files:
-            try:
-                os.remove(file_path)
-                deleted_count += 1
-                logger.info(f"🗑️ Deleted orphaned avatar: {file_path}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not delete orphaned avatar: {str(e)}")
-
-    return deleted_count

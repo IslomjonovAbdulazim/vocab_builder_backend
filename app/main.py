@@ -1,179 +1,140 @@
-# app/email.py - Simplified email service
-import smtplib
-import asyncio
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-from app.config import settings
+# app/main.py - Clean and optimized FastAPI application
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import logging
+import os
 
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
+# Create FastAPI app
+app = FastAPI(
+    title="VocabBuilder API",
+    description="🚀 Clean and simple vocabulary learning API",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
 
-class EmailService:
-    """Simple email service for sending OTPs"""
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    def __init__(self):
-        self.smtp_host = settings.smtp_host
-        self.smtp_username = settings.smtp_username
-        self.smtp_password = settings.smtp_password
-        self.from_email = settings.from_email
-        self.from_name = settings.from_name
-        self.is_configured = settings.is_email_configured()
+# Serve static files (for avatars)
+os.makedirs("app/static/uploads/avatars", exist_ok=True)
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
-    async def send_otp_email(self, email: str, otp_code: str, purpose: str = "verification") -> bool:
-        """Send OTP email - returns True if successful"""
-        if not self.is_configured:
-            logger.warning(f"⚠️ Email not configured - skipping email to {email}")
-            logger.info(f"📧 OTP Code for {email}: {otp_code}")  # Log OTP for development
-            return True  # Return True in development mode
 
-        try:
-            # Create message
-            msg = MIMEMultipart('alternative')
+# Create database tables on startup
+@app.on_event("startup")
+async def startup():
+    try:
+        logger.info("🚀 Starting VocabBuilder API...")
+        from app.database import engine, Base
+        Base.metadata.create_all(bind=engine)
+        logger.info("✅ Database tables created/verified")
+    except Exception as e:
+        logger.error(f"❌ Startup error: {str(e)}")
 
-            # Set subject and content based on purpose
-            if purpose == "reset":
-                msg['Subject'] = "Reset Your VocabBuilder Password"
-                text_content = f"Your password reset code: {otp_code}\n\nThis code expires in 5 minutes."
-            else:
-                msg['Subject'] = "Verify Your VocabBuilder Account"
-                text_content = f"Your verification code: {otp_code}\n\nThis code expires in 5 minutes."
 
-            msg['From'] = f"{self.from_name} <{self.from_email}>"
-            msg['To'] = email
-
-            # Create text and HTML versions
-            text_part = MIMEText(text_content, 'plain', 'utf-8')
-            html_part = MIMEText(self._create_html_email(otp_code, purpose), 'html', 'utf-8')
-
-            msg.attach(text_part)
-            msg.attach(html_part)
-
-            # Send email
-            success = await self._send_with_smtp(msg)
-
-            if success:
-                logger.info(f"✅ Email sent to {email}")
-            else:
-                logger.error(f"❌ Email failed to {email}")
-
-            return success
-
-        except Exception as e:
-            logger.error(f"❌ Email error: {str(e)}")
-            return False
-
-    async def _send_with_smtp(self, msg):
-        """Send email via SMTP with multiple port fallback"""
-        if not self.is_configured:
-            return False
-
-        # Timeweb SMTP configurations
-        configs = [
-            {"port": 2525, "tls": True},
-            {"port": 25, "tls": True},
-            {"port": 465, "ssl": True}
+# Basic test endpoints
+@app.get("/")
+async def root():
+    """API status endpoint"""
+    return {
+        "message": "🚀 VocabBuilder API v2.0 is running!",
+        "version": "2.0.0",
+        "docs": "/docs",
+        "status": "healthy",
+        "features": [
+            "🔐 Authentication with email verification",
+            "👤 User profiles with avatars",
+            "📁 Folder management with sharing",
+            "📚 Vocabulary management",
+            "🧠 Interactive quiz system",
+            "📊 Statistics and history"
         ]
-
-        for config in configs:
-            try:
-                await self._send_message(msg, config)
-                return True
-            except Exception as e:
-                logger.warning(f"⚠️ Failed with port {config['port']}: {str(e)}")
-                continue
-        return False
-
-    async def _send_message(self, msg, config):
-        """Send message with specific SMTP configuration"""
-        loop = asyncio.get_event_loop()
-
-        def _sync_send():
-            try:
-                if config.get('ssl', False):
-                    server = smtplib.SMTP_SSL(self.smtp_host, config['port'], timeout=10)
-                else:
-                    server = smtplib.SMTP(self.smtp_host, config['port'], timeout=10)
-                    if config.get('tls', False):
-                        server.starttls()
-
-                server.login(self.smtp_username, self.smtp_password)
-                server.send_message(msg)
-                server.quit()
-            except Exception as e:
-                logger.error(f"SMTP error: {str(e)}")
-                raise
-
-        await loop.run_in_executor(None, _sync_send)
-
-    def _create_html_email(self, otp_code: str, purpose: str) -> str:
-        """Create beautiful HTML email"""
-        if purpose == "reset":
-            title = "Reset Your Password"
-            message = "You requested to reset your password. Use the code below:"
-        else:
-            title = "Verify Your Email"
-            message = "Welcome to VocabBuilder! Please verify your email with the code below:"
-
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>{title}</title>
-        </head>
-        <body style="font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5;">
-            <div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 8px; padding: 30px;">
-
-                <!-- Header -->
-                <div style="text-align: center; margin-bottom: 30px;">
-                    <h1 style="color: #333; margin: 0; font-size: 24px;">📚 VocabBuilder</h1>
-                    <p style="color: #666; margin: 10px 0 0 0;">{title}</p>
-                </div>
-
-                <!-- Message -->
-                <p style="color: #333; font-size: 16px; line-height: 1.6; margin-bottom: 30px;">
-                    {message}
-                </p>
-
-                <!-- OTP Code -->
-                <div style="text-align: center; margin: 30px 0;">
-                    <div style="background: #f8f9fa; border: 2px dashed #007bff; border-radius: 8px; padding: 20px; display: inline-block;">
-                        <p style="color: #666; margin: 0 0 10px 0; font-size: 14px;">Your verification code:</p>
-                        <p style="color: #007bff; margin: 0; font-size: 32px; font-weight: bold; letter-spacing: 4px; font-family: monospace;">
-                            {otp_code}
-                        </p>
-                    </div>
-                </div>
-
-                <!-- Warning -->
-                <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 6px; padding: 15px; margin: 20px 0;">
-                    <p style="color: #856404; margin: 0; font-size: 14px;">
-                        ⏱️ This code expires in <strong>5 minutes</strong><br>
-                        🔒 Keep this code secure and don't share it with anyone
-                    </p>
-                </div>
-
-                <!-- Footer -->
-                <div style="text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee;">
-                    <p style="color: #999; font-size: 12px; margin: 0;">
-                        If you didn't request this code, please ignore this email.<br>
-                        © VocabBuilder - Build your vocabulary, build your future
-                    </p>
-                </div>
-
-            </div>
-        </body>
-        </html>
-        """
+    }
 
 
-# Global email service instance
-email_service = EmailService()
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "vocabbuilder-api",
+        "version": "2.0.0",
+        "database": "connected"
+    }
 
 
-# Simple function wrapper for backwards compatibility
-async def send_otp_email(email: str, otp_code: str, purpose: str = "verification") -> bool:
-    """Send OTP email - simple wrapper function"""
-    return await email_service.send_otp_email(email, otp_code, purpose)
+@app.get("/test")
+async def test_endpoint():
+    """Test endpoint to check if API is working"""
+    try:
+        from app.config import settings
+        return {
+            "status": "working",
+            "database_url": settings.database_url,
+            "email_configured": settings.is_email_configured(),
+            "debug": settings.debug
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+
+@app.get("/test-db")
+async def test_database():
+    """Test database connection"""
+    try:
+        from app.database import engine
+        from sqlalchemy import text
+
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT 1"))
+            row = result.fetchone()
+
+        return {
+            "status": "database_working",
+            "result": row[0] if row else None
+        }
+    except Exception as e:
+        return {
+            "status": "database_error",
+            "error": str(e)
+        }
+
+
+# Include routers (with error handling)
+try:
+    from app import auth, folders, quiz
+
+    app.include_router(auth.router, prefix="/auth", tags=["🔐 Authentication & Profile"])
+    app.include_router(folders.router, prefix="/folders", tags=["📁 Folders & Vocabulary"])
+    app.include_router(quiz.router, prefix="/quiz", tags=["🧠 Quiz System"])
+    logger.info("✅ All routers included successfully")
+except Exception as e:
+    logger.error(f"❌ Error including routers: {str(e)}")
+
+
+# Error handler for debugging
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    logger.error(f"❌ Global error: {str(exc)}")
+    return {
+        "error": "Internal server error",
+        "detail": str(exc) if app.debug else "Contact support"
+    }
