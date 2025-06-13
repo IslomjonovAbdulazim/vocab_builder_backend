@@ -3,6 +3,8 @@ import random
 import string
 import os
 import uuid
+import logging
+import glob
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import HTTPException, Depends, Header, UploadFile
@@ -13,6 +15,9 @@ from passlib.context import CryptContext
 from pydantic import BaseModel
 from app.config import settings
 from app.database import get_db
+
+# Setup logging
+logger = logging.getLogger(__name__)
 
 # Password hashing
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -174,8 +179,8 @@ def generate_otp() -> str:
 # FILE UPLOAD UTILITIES
 # ================================
 
-def save_avatar(file: UploadFile, user_id: int) -> str:
-    """Save uploaded avatar and return file path"""
+def save_avatar(file: UploadFile, user_id: int, old_avatar_url: str = None) -> str:
+    """Save uploaded avatar and return file path. Deletes old avatar if exists."""
     if not file.content_type.startswith('image/'):
         raise HTTPException(400, "File must be an image")
 
@@ -183,16 +188,28 @@ def save_avatar(file: UploadFile, user_id: int) -> str:
     upload_dir = "app/static/uploads/avatars"
     os.makedirs(upload_dir, exist_ok=True)
 
+    # Delete old avatar file if exists
+    if old_avatar_url:
+        try:
+            # Convert URL to file path: "/static/uploads/avatars/filename.jpg" -> "app/static/uploads/avatars/filename.jpg"
+            old_file_path = old_avatar_url.replace("/static/", "app/static/")
+            if os.path.exists(old_file_path):
+                os.remove(old_file_path)
+                logger.info(f"🗑️ Deleted old avatar: {old_file_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not delete old avatar: {str(e)}")
+
     # Generate unique filename
     file_extension = file.filename.split('.')[-1] if '.' in file.filename else 'jpg'
     filename = f"user_{user_id}_{uuid.uuid4().hex[:8]}.{file_extension}"
     file_path = os.path.join(upload_dir, filename)
 
-    # Save file
+    # Save new file
     with open(file_path, "wb") as buffer:
         content = file.file.read()
         buffer.write(content)
 
+    logger.info(f"✅ Saved new avatar: {file_path}")
     return f"/static/uploads/avatars/{filename}"
 
 
@@ -224,3 +241,39 @@ def cleanup_unverified_users(db: Session):
 
     db.commit()
     return len(unverified)
+
+
+def cleanup_orphaned_avatars(db: Session):
+    """Clean up avatar files that are no longer referenced in database"""
+    from app.models import User
+
+    avatar_dir = "app/static/uploads/avatars"
+    if not os.path.exists(avatar_dir):
+        return 0
+
+    # Get all avatar files
+    avatar_files = glob.glob(os.path.join(avatar_dir, "*.jpg")) + \
+                   glob.glob(os.path.join(avatar_dir, "*.png")) + \
+                   glob.glob(os.path.join(avatar_dir, "*.jpeg")) + \
+                   glob.glob(os.path.join(avatar_dir, "*.webp"))
+
+    # Get all avatar URLs from database
+    users_with_avatars = db.query(User.avatar_url).filter(User.avatar_url.isnot(None)).all()
+    db_avatar_files = set()
+    for user in users_with_avatars:
+        if user.avatar_url:
+            file_path = user.avatar_url.replace("/static/", "app/static/")
+            db_avatar_files.add(file_path)
+
+    # Delete orphaned files
+    deleted_count = 0
+    for file_path in avatar_files:
+        if file_path not in db_avatar_files:
+            try:
+                os.remove(file_path)
+                deleted_count += 1
+                logger.info(f"🗑️ Deleted orphaned avatar: {file_path}")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not delete orphaned avatar: {str(e)}")
+
+    return deleted_count

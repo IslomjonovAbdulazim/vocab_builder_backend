@@ -341,7 +341,7 @@ async def upload_avatar(
         user_id: int = Depends(get_current_user_id),
         db: Session = Depends(get_db)
 ):
-    """Upload user avatar"""
+    """Upload user avatar - deletes old avatar automatically"""
     # Validate file
     if not file.content_type.startswith('image/'):
         raise HTTPException(400, "File must be an image")
@@ -354,21 +354,24 @@ async def upload_avatar(
     if file_size > 5 * 1024 * 1024:  # 5MB
         raise HTTPException(400, "File size must be less than 5MB")
 
-    # Save avatar
-    avatar_url = save_avatar(file, user_id)
-
-    # Update user record
+    # Get user and old avatar URL
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(404, "User not found")
 
+    old_avatar_url = user.avatar_url  # Get old avatar before saving new one
+
+    # Save new avatar (this will delete the old one)
+    avatar_url = save_avatar(file, user_id, old_avatar_url)
+
+    # Update user record
     user.avatar_url = avatar_url
     db.commit()
 
     return StandardResponse(
         status_code=200,
         is_success=True,
-        details="Avatar uploaded successfully",
+        details="Avatar uploaded successfully. Old avatar deleted.",
         data={"avatar_url": avatar_url}
     )
 
