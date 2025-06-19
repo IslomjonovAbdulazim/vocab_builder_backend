@@ -75,7 +75,7 @@ def check_folder_access(folder, user_id: int, db: Session) -> bool:
 
 @router.get("/my", response_model=StandardResponse)
 async def get_my_folders(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    """Get user's owned and followed folders"""
+    """Get user's owned and followed folders combined in one list"""
 
     # Get owned folders
     owned_folders = db.query(Folder).filter(Folder.owner_id == user_id).all()
@@ -88,8 +88,12 @@ async def get_my_folders(user_id: int = Depends(get_current_user_id), db: Sessio
         Folder.owner_id != user_id  # Exclude owned folders from followed list
     ).all()
 
-    owned_list = [
-        {
+    # Create combined list
+    all_folders = []
+
+    # Add owned folders
+    for folder in owned_folders:
+        all_folders.append({
             "id": folder.id,
             "title": folder.title,
             "description": folder.description,
@@ -108,12 +112,11 @@ async def get_my_folders(user_id: int = Depends(get_current_user_id), db: Sessio
             "updated_at": folder.updated_at,
             "shared_at": folder.shared_at,
             "accessed_at": None
-        }
-        for folder in owned_folders
-    ]
+        })
 
-    followed_list = [
-        {
+    # Add followed folders
+    for result in followed_query:
+        all_folders.append({
             "id": result.Folder.id,
             "title": result.Folder.title,
             "description": result.Folder.description,
@@ -132,19 +135,17 @@ async def get_my_folders(user_id: int = Depends(get_current_user_id), db: Sessio
             "updated_at": result.Folder.updated_at,
             "shared_at": result.Folder.shared_at,
             "accessed_at": result.FolderAccess.accessed_at
-        }
-        for result in followed_query
-    ]
+        })
+
+    # Sort by title (case-insensitive)
+    all_folders.sort(key=lambda x: x["title"].lower())
 
     return StandardResponse(
         status_code=200,
         is_success=True,
         details="Folders retrieved successfully",
         data={
-            "owned_folders": owned_list,
-            "followed_folders": followed_list,
-            "total_owned": len(owned_list),
-            "total_followed": len(followed_list)
+            "folders": all_folders
         }
     )
 
