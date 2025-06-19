@@ -1,4 +1,4 @@
-# app/models.py - All models in one file
+# app/models.py - Updated models with fixed folder sharing
 from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Float, ForeignKey, UniqueConstraint
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -60,7 +60,7 @@ class Folder(Base):
 
     # Stats
     total_words = Column(Integer, default=0)
-    total_copies = Column(Integer, default=0)
+    total_followers = Column(Integer, default=0)  # Changed from total_copies to total_followers
     total_quizzes = Column(Integer, default=0)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -88,22 +88,20 @@ class VocabItem(Base):
     folder = relationship("Folder", back_populates="vocab_items")
 
 
-class FolderCopy(Base):
-    __tablename__ = "folder_copies"
+class FolderAccess(Base):  # Renamed from FolderCopy to FolderAccess
+    __tablename__ = "folder_access"  # Renamed table
 
     id = Column(Integer, primary_key=True, index=True)
-    original_folder_id = Column(Integer, ForeignKey("folders.id"), nullable=False)
-    copied_folder_id = Column(Integer, ForeignKey("folders.id"), nullable=False)
-    copied_by_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    copied_at = Column(DateTime(timezone=True), server_default=func.now())
+    folder_id = Column(Integer, ForeignKey("folders.id"), nullable=False)  # Reference to original folder only
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # User who has access
+    accessed_at = Column(DateTime(timezone=True), server_default=func.now())  # When they got access
 
     # Relationships
-    original_folder = relationship("Folder", foreign_keys=[original_folder_id])
-    copied_folder = relationship("Folder", foreign_keys=[copied_folder_id])
-    copied_by = relationship("User")
+    folder = relationship("Folder")
+    user = relationship("User")
 
-    # Constraints
-    __table_args__ = (UniqueConstraint('original_folder_id', 'copied_by_user_id', name='_unique_copy'),)
+    # Constraints - user can only have access to a folder once
+    __table_args__ = (UniqueConstraint('folder_id', 'user_id', name='_unique_folder_access'),)
 
 
 # ================================

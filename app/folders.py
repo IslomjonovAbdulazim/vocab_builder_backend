@@ -1,14 +1,14 @@
-# app/folders.py - Folder and vocabulary management
+# app/folders.py - Updated folder management with proper sharing system
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional
 
 from app.database import get_db
-from app.models import Folder, VocabItem, FolderCopy, User
+from app.models import Folder, VocabItem, FolderAccess, User
 from app.utils import (
     StandardResponse, get_current_user_id, generate_share_code,
-    validate_vocabulary_item, check_folder_access, update_folder_word_count,
+    validate_vocabulary_item, update_folder_word_count,
     is_folder_share_valid, refresh_folder_share
 )
 
@@ -43,8 +43,30 @@ class VocabItemUpdate(BaseModel):
     example_sentence: Optional[str] = None
 
 
-class FolderCopyRequest(BaseModel):
+class FolderFollowRequest(BaseModel):
     share_code: str
+
+
+# ================================
+# UPDATED UTILITIES
+# ================================
+
+def check_folder_access(folder, user_id: int, db: Session) -> bool:
+    """Check if user can access folder (owns it or has access to it)"""
+    try:
+        # Check if user owns the folder
+        if folder.owner_id == user_id:
+            return True
+
+        # Check if user has access to the folder
+        access_exists = db.query(FolderAccess).filter(
+            FolderAccess.folder_id == folder.id,
+            FolderAccess.user_id == user_id
+        ).first()
+
+        return access_exists is not None
+    except Exception:
+        return folder.owner_id == user_id  # Fallback to ownership check
 
 
 # ================================
@@ -53,10 +75,20 @@ class FolderCopyRequest(BaseModel):
 
 @router.get("/my", response_model=StandardResponse)
 async def get_my_folders(user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    """Get user's owned folders"""
-    folders = db.query(Folder).filter(Folder.owner_id == user_id).all()
+    """Get user's owned and followed folders"""
 
-    folder_list = [
+    # Get owned folders
+    owned_folders = db.query(Folder).filter(Folder.owner_id == user_id).all()
+
+    # Get followed folders (folders user has access to)
+    followed_query = db.query(Folder, FolderAccess).join(
+        FolderAccess, Folder.id == FolderAccess.folder_id
+    ).filter(
+        FolderAccess.user_id == user_id,
+        Folder.owner_id != user_id  # Exclude owned folders from followed list
+    ).all()
+
+    owned_list = [
         {
             "id": folder.id,
             "title": folder.title,
@@ -65,28 +97,63 @@ async def get_my_folders(user_id: int = Depends(get_current_user_id), db: Sessio
             "is_shareable": folder.is_shareable,
             "is_share_valid": is_folder_share_valid(folder),
             "total_words": folder.total_words,
-            "total_copies": folder.total_copies,
+            "total_followers": folder.total_followers,
             "total_quizzes": folder.total_quizzes,
+            "is_owner": True,
+            "owner": {
+                "username": folder.owner.username,
+                "name": folder.owner.name
+            },
             "created_at": folder.created_at,
             "updated_at": folder.updated_at,
-            "shared_at": folder.shared_at
+            "shared_at": folder.shared_at,
+            "accessed_at": None
         }
-        for folder in folders
+        for folder in owned_folders
+    ]
+
+    followed_list = [
+        {
+            "id": result.Folder.id,
+            "title": result.Folder.title,
+            "description": result.Folder.description,
+            "share_code": None,  # Don't show share code for followed folders
+            "is_shareable": result.Folder.is_shareable,
+            "is_share_valid": is_folder_share_valid(result.Folder),
+            "total_words": result.Folder.total_words,
+            "total_followers": result.Folder.total_followers,
+            "total_quizzes": result.Folder.total_quizzes,
+            "is_owner": False,
+            "owner": {
+                "username": result.Folder.owner.username,
+                "name": result.Folder.owner.name
+            },
+            "created_at": result.Folder.created_at,
+            "updated_at": result.Folder.updated_at,
+            "shared_at": result.Folder.shared_at,
+            "accessed_at": result.FolderAccess.accessed_at
+        }
+        for result in followed_query
     ]
 
     return StandardResponse(
         status_code=200,
         is_success=True,
         details="Folders retrieved successfully",
-        data={"folders": folder_list}
+        data={
+            "owned_folders": owned_list,
+            "followed_folders": followed_list,
+            "total_owned": len(owned_list),
+            "total_followed": len(followed_list)
+        }
     )
 
 
 @router.post("/", response_model=StandardResponse)
 async def create_folder(
-    folder_data: FolderCreate,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_data: FolderCreate,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
     """Create new folder"""
     if not folder_data.title or len(folder_data.title.strip()) < 1:
@@ -131,6 +198,7 @@ async def create_folder(
                 "is_shareable": folder.is_shareable,
                 "is_share_valid": is_folder_share_valid(folder),
                 "total_words": folder.total_words,
+                "is_owner": True,
                 "created_at": folder.created_at,
                 "shared_at": folder.shared_at
             }
@@ -143,9 +211,9 @@ async def create_folder(
 
 @router.get("/{folder_id}", response_model=StandardResponse)
 async def get_folder(
-    folder_id: int,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
     """Get folder details"""
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
@@ -156,6 +224,16 @@ async def get_folder(
     # Check access permission
     if not check_folder_access(folder, user_id, db):
         raise HTTPException(403, "Not authorized to view this folder")
+
+    # Get access info if user is a follower
+    access_info = None
+    if folder.owner_id != user_id:
+        folder_access = db.query(FolderAccess).filter(
+            FolderAccess.folder_id == folder_id,
+            FolderAccess.user_id == user_id
+        ).first()
+        if folder_access:
+            access_info = folder_access.accessed_at
 
     return StandardResponse(
         status_code=200,
@@ -169,7 +247,7 @@ async def get_folder(
             "is_shareable": folder.is_shareable,
             "is_share_valid": is_folder_share_valid(folder),
             "total_words": folder.total_words,
-            "total_copies": folder.total_copies,
+            "total_followers": folder.total_followers,
             "total_quizzes": folder.total_quizzes,
             "is_owner": folder.owner_id == user_id,
             "owner": {
@@ -178,17 +256,18 @@ async def get_folder(
             },
             "created_at": folder.created_at,
             "updated_at": folder.updated_at,
-            "shared_at": folder.shared_at
+            "shared_at": folder.shared_at,
+            "accessed_at": access_info
         }
     )
 
 
 @router.put("/{folder_id}", response_model=StandardResponse)
 async def update_folder(
-    folder_id: int,
-    folder_data: FolderUpdate,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        folder_data: FolderUpdate,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
     """Update folder (owner only)"""
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
@@ -197,7 +276,7 @@ async def update_folder(
         raise HTTPException(404, "Folder not found")
 
     if folder.owner_id != user_id:
-        raise HTTPException(403, "Not authorized to edit this folder")
+        raise HTTPException(403, "Only the folder owner can edit this folder")
 
     try:
         # Update fields
@@ -212,7 +291,7 @@ async def update_folder(
         return StandardResponse(
             status_code=200,
             is_success=True,
-            details="Folder updated successfully",
+            details="Folder updated successfully. Changes are visible to all followers.",
             data={
                 "id": folder.id,
                 "title": folder.title,
@@ -228,21 +307,24 @@ async def update_folder(
 
 @router.delete("/{folder_id}", response_model=StandardResponse)
 async def delete_folder(
-    folder_id: int,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
-    """Delete folder (owner only)"""
+    """Delete folder (owner only) - removes access for all followers"""
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
 
     if not folder:
         raise HTTPException(404, "Folder not found")
 
     if folder.owner_id != user_id:
-        raise HTTPException(403, "Not authorized to delete this folder")
+        raise HTTPException(403, "Only the folder owner can delete this folder")
 
     try:
-        # Delete folder (cascade will delete vocab items and copies)
+        # Get number of followers before deletion
+        followers_count = db.query(FolderAccess).filter(FolderAccess.folder_id == folder_id).count()
+
+        # Delete folder (cascade will delete vocab items and folder_access records)
         db.delete(folder)
         db.commit()
 
@@ -255,7 +337,7 @@ async def delete_folder(
         return StandardResponse(
             status_code=200,
             is_success=True,
-            details="Folder deleted successfully"
+            details=f"Folder deleted successfully. Removed access for {followers_count} followers."
         )
 
     except Exception as e:
@@ -264,14 +346,14 @@ async def delete_folder(
 
 
 # ================================
-# SHARE SYSTEM
+# SHARE SYSTEM (UPDATED)
 # ================================
 
 @router.post("/{folder_id}/refresh-share", response_model=StandardResponse)
 async def refresh_share_link(
-    folder_id: int,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
     """Refresh share link (reset 24-hour timer)"""
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
@@ -280,7 +362,7 @@ async def refresh_share_link(
         raise HTTPException(404, "Folder not found")
 
     if folder.owner_id != user_id:
-        raise HTTPException(403, "Not authorized to refresh share link")
+        raise HTTPException(403, "Only the folder owner can refresh share link")
 
     try:
         # Refresh share timestamp
@@ -302,110 +384,69 @@ async def refresh_share_link(
         raise HTTPException(400, f"Error refreshing share link: {str(e)}")
 
 
-@router.post("/copy", response_model=StandardResponse)
-async def copy_folder(
-    copy_request: FolderCopyRequest,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+@router.post("/follow", response_model=StandardResponse)
+async def follow_folder(
+        follow_request: FolderFollowRequest,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
-    """Copy folder using share code"""
+    """Follow folder using share code (replaces copy_folder)"""
     try:
         # Find original folder
-        original_folder = db.query(Folder).filter(
-            Folder.share_code == copy_request.share_code.upper(),
+        folder = db.query(Folder).filter(
+            Folder.share_code == follow_request.share_code.upper(),
             Folder.is_shareable == True
         ).first()
 
-        if not original_folder:
+        if not folder:
             raise HTTPException(400, "Invalid share code or folder not shareable")
 
         # Check if share is still valid (within 24 hours)
-        if not is_folder_share_valid(original_folder):
+        if not is_folder_share_valid(folder):
             raise HTTPException(400, "Share link has expired (24 hours limit)")
 
-        # Check if user already copied this folder
-        existing_copy = db.query(FolderCopy).filter(
-            FolderCopy.original_folder_id == original_folder.id,
-            FolderCopy.copied_by_user_id == user_id
+        # Can't follow your own folder
+        if folder.owner_id == user_id:
+            raise HTTPException(400, "You cannot follow your own folder")
+
+        # Check if user already follows this folder
+        existing_access = db.query(FolderAccess).filter(
+            FolderAccess.folder_id == folder.id,
+            FolderAccess.user_id == user_id
         ).first()
 
-        if existing_copy:
-            raise HTTPException(400, "You already copied this folder")
+        if existing_access:
+            raise HTTPException(400, "You are already following this folder")
 
-        # Can't copy your own folder
-        if original_folder.owner_id == user_id:
-            raise HTTPException(400, "You cannot copy your own folder")
-
-        # Create new folder
-        new_folder = Folder(
-            title=f"{original_folder.title} (Copy)",
-            description=original_folder.description,
-            owner_id=user_id,
-            share_code=generate_share_code(),
-            total_words=original_folder.total_words
+        # Create folder access record
+        folder_access = FolderAccess(
+            folder_id=folder.id,
+            user_id=user_id
         )
+        db.add(folder_access)
 
-        # Ensure unique share code
-        while db.query(Folder).filter(Folder.share_code == new_folder.share_code).first():
-            new_folder.share_code = generate_share_code()
-
-        db.add(new_folder)
-        db.flush()
-
-        # Copy all vocabulary items
-        vocab_items = db.query(VocabItem).filter(
-            VocabItem.folder_id == original_folder.id
-        ).order_by(VocabItem.order_index).all()
-
-        for item in vocab_items:
-            new_item = VocabItem(
-                folder_id=new_folder.id,
-                word=item.word,
-                translation=item.translation,
-                definition=item.definition,
-                example_sentence=item.example_sentence,
-                order_index=item.order_index
-            )
-            db.add(new_item)
-
-        # Track the copy
-        folder_copy = FolderCopy(
-            original_folder_id=original_folder.id,
-            copied_folder_id=new_folder.id,
-            copied_by_user_id=user_id
-        )
-        db.add(folder_copy)
-
-        # Update stats
-        original_folder.total_copies += 1
-
-        user = db.query(User).filter(User.id == user_id).first()
-        if user:
-            user.total_folders_created += 1
+        # Update folder stats
+        folder.total_followers += 1
 
         db.commit()
-        db.refresh(new_folder)
 
         return StandardResponse(
             status_code=201,
             is_success=True,
-            details="Folder copied successfully",
+            details="Folder followed successfully! You now have access to this folder and will see any updates made by the owner.",
             data={
-                "copied_folder": {
-                    "id": new_folder.id,
-                    "title": new_folder.title,
-                    "description": new_folder.description,
-                    "share_code": new_folder.share_code,
-                    "total_words": new_folder.total_words
-                },
-                "original_folder": {
-                    "id": original_folder.id,
-                    "title": original_folder.title,
+                "folder": {
+                    "id": folder.id,
+                    "title": folder.title,
+                    "description": folder.description,
+                    "total_words": folder.total_words,
+                    "total_followers": folder.total_followers,
                     "owner": {
-                        "username": original_folder.owner.username,
-                        "name": original_folder.owner.name
+                        "username": folder.owner.username,
+                        "name": folder.owner.name
                     }
-                }
+                },
+                "accessed_at": folder_access.accessed_at
             }
         )
 
@@ -413,7 +454,55 @@ async def copy_folder(
         db.rollback()
         if isinstance(e, HTTPException):
             raise e
-        raise HTTPException(400, f"Error copying folder: {str(e)}")
+        raise HTTPException(400, f"Error following folder: {str(e)}")
+
+
+@router.delete("/{folder_id}/unfollow", response_model=StandardResponse)
+async def unfollow_folder(
+        folder_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
+):
+    """Unfollow folder (remove access)"""
+    try:
+        folder = db.query(Folder).filter(Folder.id == folder_id).first()
+
+        if not folder:
+            raise HTTPException(404, "Folder not found")
+
+        # Can't unfollow your own folder
+        if folder.owner_id == user_id:
+            raise HTTPException(400, "You cannot unfollow your own folder. Use delete instead.")
+
+        # Find and remove access record
+        folder_access = db.query(FolderAccess).filter(
+            FolderAccess.folder_id == folder_id,
+            FolderAccess.user_id == user_id
+        ).first()
+
+        if not folder_access:
+            raise HTTPException(400, "You are not following this folder")
+
+        # Remove access
+        db.delete(folder_access)
+
+        # Update folder stats
+        if folder.total_followers > 0:
+            folder.total_followers -= 1
+
+        db.commit()
+
+        return StandardResponse(
+            status_code=200,
+            is_success=True,
+            details="Folder unfollowed successfully. You no longer have access to this folder."
+        )
+
+    except Exception as e:
+        db.rollback()
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(400, f"Error unfollowing folder: {str(e)}")
 
 
 @router.get("/{folder_id}/share-info", response_model=StandardResponse)
@@ -437,7 +526,7 @@ async def get_share_info(folder_id: int, db: Session = Depends(get_db)):
             "title": folder.title,
             "description": folder.description,
             "total_words": folder.total_words,
-            "total_copies": folder.total_copies,
+            "total_followers": folder.total_followers,
             "owner": {
                 "username": folder.owner.username,
                 "name": folder.owner.name
@@ -450,14 +539,14 @@ async def get_share_info(folder_id: int, db: Session = Depends(get_db)):
 
 
 # ================================
-# VOCABULARY MANAGEMENT
+# VOCABULARY MANAGEMENT (OWNER ONLY)
 # ================================
 
 @router.get("/{folder_id}/vocab", response_model=StandardResponse)
 async def get_folder_vocabulary(
-    folder_id: int,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
     """Get all vocabulary items in folder"""
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
@@ -465,7 +554,7 @@ async def get_folder_vocabulary(
     if not folder:
         raise HTTPException(404, "Folder not found")
 
-    # Check access (owner or copied)
+    # Check access (owner or follower)
     if not check_folder_access(folder, user_id, db):
         raise HTTPException(403, "Not authorized to view this folder")
 
@@ -495,7 +584,8 @@ async def get_folder_vocabulary(
             "vocabulary": vocab_list,
             "folder": {
                 "id": folder.id,
-                "title": folder.title
+                "title": folder.title,
+                "is_owner": folder.owner_id == user_id
             }
         }
     )
@@ -503,12 +593,12 @@ async def get_folder_vocabulary(
 
 @router.post("/{folder_id}/vocab", response_model=StandardResponse)
 async def add_vocabulary_item(
-    folder_id: int,
-    vocab_data: VocabItemCreate,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        vocab_data: VocabItemCreate,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
-    """Add vocabulary item to folder"""
+    """Add vocabulary item to folder (owner only)"""
     # Check folder ownership
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
 
@@ -516,7 +606,7 @@ async def add_vocabulary_item(
         raise HTTPException(404, "Folder not found")
 
     if folder.owner_id != user_id:
-        raise HTTPException(403, "Not authorized to edit this folder")
+        raise HTTPException(403, "Only the folder owner can add vocabulary items")
 
     # Validate input
     validation = validate_vocabulary_item(vocab_data.word, vocab_data.translation)
@@ -547,7 +637,7 @@ async def add_vocabulary_item(
         return StandardResponse(
             status_code=201,
             is_success=True,
-            details="Vocabulary item added successfully",
+            details="Vocabulary item added successfully. All followers will see this new word.",
             data={
                 "id": vocab_item.id,
                 "word": vocab_item.word,
@@ -567,13 +657,13 @@ async def add_vocabulary_item(
 
 @router.put("/{folder_id}/vocab/{vocab_id}", response_model=StandardResponse)
 async def update_vocabulary_item(
-    folder_id: int,
-    vocab_id: int,
-    vocab_data: VocabItemUpdate,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        vocab_id: int,
+        vocab_data: VocabItemUpdate,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
-    """Update vocabulary item"""
+    """Update vocabulary item (owner only)"""
     # Check folder ownership
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
 
@@ -581,7 +671,7 @@ async def update_vocabulary_item(
         raise HTTPException(404, "Folder not found")
 
     if folder.owner_id != user_id:
-        raise HTTPException(403, "Not authorized to edit this folder")
+        raise HTTPException(403, "Only the folder owner can edit vocabulary items")
 
     # Find vocabulary item
     vocab_item = db.query(VocabItem).filter(
@@ -621,7 +711,7 @@ async def update_vocabulary_item(
         return StandardResponse(
             status_code=200,
             is_success=True,
-            details="Vocabulary item updated successfully",
+            details="Vocabulary item updated successfully. All followers will see this change.",
             data={
                 "id": vocab_item.id,
                 "word": vocab_item.word,
@@ -643,12 +733,12 @@ async def update_vocabulary_item(
 
 @router.delete("/{folder_id}/vocab/{vocab_id}", response_model=StandardResponse)
 async def delete_vocabulary_item(
-    folder_id: int,
-    vocab_id: int,
-    user_id: int = Depends(get_current_user_id),
-    db: Session = Depends(get_db)
+        folder_id: int,
+        vocab_id: int,
+        user_id: int = Depends(get_current_user_id),
+        db: Session = Depends(get_db)
 ):
-    """Delete vocabulary item"""
+    """Delete vocabulary item (owner only)"""
     # Check folder ownership
     folder = db.query(Folder).filter(Folder.id == folder_id).first()
 
@@ -656,7 +746,7 @@ async def delete_vocabulary_item(
         raise HTTPException(404, "Folder not found")
 
     if folder.owner_id != user_id:
-        raise HTTPException(403, "Not authorized to edit this folder")
+        raise HTTPException(403, "Only the folder owner can delete vocabulary items")
 
     # Find vocabulary item
     vocab_item = db.query(VocabItem).filter(
@@ -678,7 +768,7 @@ async def delete_vocabulary_item(
         return StandardResponse(
             status_code=200,
             is_success=True,
-            details="Vocabulary item deleted successfully"
+            details="Vocabulary item deleted successfully. All followers will see this change."
         )
 
     except Exception as e:

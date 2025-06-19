@@ -1,4 +1,4 @@
-# app/utils.py - Shared utilities and common functions (FIXED)
+# app/utils.py - Updated utilities for new folder access system
 import random
 import string
 import os
@@ -118,7 +118,7 @@ def validate_vocabulary_item(word: str, translation: str) -> dict:
 
 
 # ================================
-# FOLDER UTILITIES
+# FOLDER UTILITIES (UPDATED)
 # ================================
 
 def generate_share_code() -> str:
@@ -138,19 +138,21 @@ def generate_username(name: str, email: str) -> str:
 
 
 def check_folder_access(folder, user_id: int, db: Session) -> bool:
-    """Check if user can access folder (owns it or copied it)"""
+    """Check if user can access folder (owns it or has access to it)"""
     try:
-        from app.models import FolderCopy
+        from app.models import FolderAccess
 
+        # Check if user owns the folder
         if folder.owner_id == user_id:
             return True
 
-        copy_exists = db.query(FolderCopy).filter(
-            FolderCopy.original_folder_id == folder.id,
-            FolderCopy.copied_by_user_id == user_id
+        # Check if user has access to the folder
+        access_exists = db.query(FolderAccess).filter(
+            FolderAccess.folder_id == folder.id,
+            FolderAccess.user_id == user_id
         ).first()
 
-        return copy_exists is not None
+        return access_exists is not None
     except Exception as e:
         logger.warning(f"⚠️ Error checking folder access: {str(e)}")
         return folder.owner_id == user_id  # Fallback to ownership check
@@ -197,6 +199,18 @@ def refresh_folder_share(folder, db: Session):
             logger.warning("⚠️ shared_at column not found - skipping refresh")
     except Exception as e:
         logger.warning(f"⚠️ Error refreshing folder share: {str(e)}")
+        db.rollback()
+
+
+def update_folder_followers_count(folder, db: Session):
+    """Update folder's followers count"""
+    try:
+        from app.models import FolderAccess
+        count = db.query(FolderAccess).filter(FolderAccess.folder_id == folder.id).count()
+        folder.total_followers = count
+        db.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ Error updating folder followers count: {str(e)}")
         db.rollback()
 
 
@@ -255,7 +269,7 @@ def save_avatar(file: UploadFile, user_id: int, old_avatar_url: str = None) -> s
 
 
 # ================================
-# SAFE CLEANUP UTILITIES (FIXED)
+# SAFE CLEANUP UTILITIES (UPDATED)
 # ================================
 
 def cleanup_expired_otps(db: Session):
@@ -349,4 +363,31 @@ def cleanup_orphaned_avatars(db: Session):
 
     except Exception as e:
         logger.warning(f"⚠️ Error cleaning up orphaned avatars: {str(e)}")
+        return 0
+
+
+def cleanup_orphaned_folder_access(db: Session):
+    """Clean up folder access records for deleted folders"""
+    try:
+        from app.models import FolderAccess, Folder
+
+        # Find folder access records where the folder no longer exists
+        orphaned_access = db.query(FolderAccess).filter(
+            ~db.query(Folder).filter(Folder.id == FolderAccess.folder_id).exists()
+        ).all()
+
+        deleted_count = 0
+        for access in orphaned_access:
+            db.delete(access)
+            deleted_count += 1
+
+        if deleted_count > 0:
+            db.commit()
+            logger.info(f"🧹 Cleaned up {deleted_count} orphaned folder access records")
+
+        return deleted_count
+
+    except Exception as e:
+        logger.warning(f"⚠️ Error cleaning up orphaned folder access: {str(e)}")
+        db.rollback()
         return 0

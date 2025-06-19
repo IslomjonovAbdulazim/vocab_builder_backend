@@ -1,4 +1,4 @@
-# app/quiz.py - Quiz system
+# app/quiz.py - Updated quiz system for new folder access model
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -115,7 +115,7 @@ async def start_quiz(
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
 ):
-    """Start new quiz session"""
+    """Start new quiz session - works for folder owners and followers"""
     # Validate quiz type
     valid_types = ["mixed", "translation", "definition"]
     if quiz_request.quiz_type not in valid_types:
@@ -131,7 +131,7 @@ async def start_quiz(
         if not folder:
             raise HTTPException(404, "Folder not found")
 
-        # Check if user can access this folder
+        # Check if user can access this folder (owner or follower)
         if not check_folder_access(folder, user_id, db):
             raise HTTPException(403, "Not authorized to quiz this folder")
 
@@ -167,6 +167,9 @@ async def start_quiz(
             data={
                 "quiz_id": quiz_session.id,
                 "folder_id": quiz_session.folder_id,
+                "folder_title": folder.title,
+                "folder_owner": folder.owner.username,
+                "is_folder_owner": folder.owner_id == user_id,
                 "quiz_type": quiz_session.quiz_type,
                 "question_count": quiz_session.question_count,
                 "current_question": quiz_session.current_question,
@@ -344,6 +347,7 @@ async def get_quiz_results(
             data={
                 "quiz_id": quiz.id,
                 "folder_title": folder.title if folder else "Unknown",
+                "folder_owner": folder.owner.username if folder else "Unknown",
                 "quiz_type": quiz.quiz_type,
                 "status": quiz.status,
                 "score": quiz.score,
@@ -496,6 +500,8 @@ async def get_user_quiz_history(
                 "quiz_id": quiz.QuizSession.id,
                 "folder_title": quiz.Folder.title,
                 "folder_id": quiz.Folder.id,
+                "folder_owner": quiz.Folder.owner.username,
+                "is_own_folder": quiz.Folder.owner_id == user_id,
                 "quiz_type": quiz.QuizSession.quiz_type,
                 "score": quiz.QuizSession.score,
                 "correct_answers": quiz.QuizSession.correct_answers,
@@ -563,6 +569,8 @@ async def get_folder_quiz_history(
             details="Folder quiz history retrieved successfully",
             data={
                 "folder_title": folder.title,
+                "folder_owner": folder.owner.username,
+                "is_own_folder": folder.owner_id == user_id,
                 "quiz_history": quiz_history
             }
         )
